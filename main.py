@@ -36,14 +36,14 @@ def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residu
 
     # Convertimos float a Decimal antes de operar
     monto_comision = Decimal(comision) / Decimal(100) * pv
-    monto_enganche = Decimal(enganche) / Decimal(100) * Decimal(valor)
+    monto_enganche = Decimal(enganche) / Decimal(100) * Decimal(valor)/ Decimal('1.16')
     monto_deposito = Decimal(rentas_deposito) * pago * Decimal('1.16')
     monto_residual = (Decimal(valor) / Decimal('1.16')) * Decimal(valor_residual) / Decimal(100)
 
     # Pago inicial
     subtotal_inicial = monto_enganche + monto_comision + monto_deposito + pago
-    iva_inicial = subtotal_inicial * Decimal('0.16')
-    total_inicial = subtotal_inicial * Decimal('1.16')
+    iva_inicial = (monto_enganche + monto_comision + pago) * Decimal('0.16')
+    total_inicial = subtotal_inicial + iva_inicial
 
     # Renta mensual
     iva_renta = pago * Decimal('0.16')
