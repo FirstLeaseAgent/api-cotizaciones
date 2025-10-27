@@ -11,7 +11,7 @@ import requests
 getcontext().prec = 28
 app = FastAPI(title="API de Cotización de Arrendamiento")
 
-TEMPLATE_MANAGER_URL = "https://template-manager-3mt1.onrender.com/generate_pdf"
+TEMPLATE_MANAGER_URL = "https://template-manager-3mt1.onrender.com/generate_word"
 TEMPLATE_LIST_URL = "https://template-manager-3mt1.onrender.com/templates"
 PLANTILLA_ID = "2ab9df51-ac07-4c8c-b23a-e430ca1b4b90"  # ID de tu plantilla en Template Manager
 
@@ -147,7 +147,17 @@ def traducir_json_a_plantilla(json_cotizacion):
 # ===========================================================
 # FUNCIÓN: Generar PDF/Word en Template Manager
 # ===========================================================
+# URL base de Template Manager
+TEMPLATE_MANAGER_URL = "https://template-manager-3mt1.onrender.com/generate_word"
+
+# ID fijo de la plantilla que usarás (puedes obtenerlo desde /templates)
+PLANTILLA_ID = "2ab9df51-ac07-4c8c-b23a-e430ca1b4b90"
+
 def generar_cotizacion_pdf(valores_plantilla):
+    """
+    Envía los valores calculados a Template Manager para generar
+    un documento Word con la plantilla especificada.
+    """
     payload = {
         "plantilla_id": PLANTILLA_ID,
         "valores": valores_plantilla
@@ -157,14 +167,18 @@ def generar_cotizacion_pdf(valores_plantilla):
         response = requests.post(TEMPLATE_MANAGER_URL, json=payload, timeout=60)
         response.raise_for_status()
         data = response.json()
+
         return {
-            "mensaje": "Documentos generados correctamente",
+            "mensaje": "Documento generado correctamente",
             "descargar_word": data.get("descargar_word"),
-            "descargar_pdf": data.get("descargar_pdf"),
+            "archivo_word": data.get("archivo_word"),
             "faltantes": valores_plantilla.get("variables_faltantes", [])
         }
+
     except requests.exceptions.RequestException as e:
-        raise Exception(f"Error al conectar con Template Manager: {str(e)}")
+        return {
+            "error": f"Error al conectar con Template Manager: {str(e)}"
+        }
 
 
 # ===========================================================
