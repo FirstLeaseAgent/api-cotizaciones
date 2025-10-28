@@ -152,41 +152,69 @@ def cotizar(data: CotizacionRequest, request: Request):
             })
 
             # Mapeo de campos esperados por tu plantilla:
-            if e["plazo"] == 24:
+             if e["plazo"] == 24:
                 valores_para_doc.update({
+                    # --- Inicial ---
                     "enganche24": formato_miles(calculos["Enganche"]),
                     "comision24": formato_miles(calculos["Comision"]),
                     "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
-                    "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
+                    "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                    "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
                     "totalinicial24": formato_miles(calculos["Total_Inicial"]),
+
+                    # --- Mensualidad ---
+                    "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
+                    "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
                     "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
+
+                    # --- Residual ---
+                    "residual24": formato_miles(calculos["Residual"]),
+                    "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
                     "totalresidual24": formato_miles(calculos["Total_Residual"]),
-                    "totalfinal24": formato_miles(calculos["Total_Final"]),
+
+                    # --- Totales finales ---
                     "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
+                    "totalfinal24": formato_miles(calculos["Total_Final"]),
                 })
             if e["plazo"] == 36:
                 valores_para_doc.update({
                     "enganche36": formato_miles(calculos["Enganche"]),
                     "comision36": formato_miles(calculos["Comision"]),
                     "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
-                    "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
+                    "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                    "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
                     "totalinicial36": formato_miles(calculos["Total_Inicial"]),
+
+                    "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
+                    "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
                     "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
+
+                    "residual36": formato_miles(calculos["Residual"]),
+                    "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
                     "totalresidual36": formato_miles(calculos["Total_Residual"]),
-                    "totalfinal36": formato_miles(calculos["Total_Final"]),
+
                     "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
+                    "totalfinal36": formato_miles(calculos["Total_Final"]),
                 })
             if e["plazo"] == 48:
                 valores_para_doc.update({
                     "enganche48": formato_miles(calculos["Enganche"]),
-                    "comisiion48": formato_miles(calculos["Comision"]),
+                    "comision48": formato_miles(calculos["Comision"]),
                     "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
-                    "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
+                    "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                    "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
                     "totalinicial48": formato_miles(calculos["Total_Inicial"]),
+
+                    "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
+                    "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
                     "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
+
+                    "residual48": formato_miles(calculos["Residual"]),
+                    "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
                     "totalresidual48": formato_miles(calculos["Total_Residual"]),
-                    "totalfinal48": formato_miles(calculos["Total_Final"]),
+
                     "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
+                    "totalfinal48": formato_miles(calculos["Total_Final"]),
                 })
 
         resultado["Cotizaciones"].append({
