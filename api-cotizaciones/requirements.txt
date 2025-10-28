@@ -4,3 +4,4 @@ pydantic
 reportlab
 requests
 python-docx
+python-multipart
