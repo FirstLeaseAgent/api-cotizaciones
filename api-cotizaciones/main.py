@@ -1,3 +1,5 @@
+import sys, os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
