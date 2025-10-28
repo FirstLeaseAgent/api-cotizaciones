@@ -286,17 +286,23 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
     # 3. Cargar Word
     doc = Document(plantilla_path)
 
-    # 4. Reemplazar variables {{var}} en párrafos y tablas
-    for var, valor in valores.items():
-        marcador = f"{{{{{var}}}}}"
-        for p in doc.paragraphs:
-            if marcador in p.text:
-                p.text = p.text.replace(marcador, str(valor))
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    if marcador in cell.text:
-                        cell.text = cell.text.replace(marcador, str(valor))
+    # 4.--- Reemplazo de variables manteniendo formato (runs) ---
+    for p in doc.paragraphs:
+        for run in p.runs:
+            for var, valor in valores.items():
+                placeholder = f"{{{{{var}}}}}"
+                if placeholder in run.text:
+                    run.text = run.text.replace(placeholder, str(valor))
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        for var, valor in valores.items():
+                            placeholder = f"{{{{{var}}}}}"
+                            if placeholder in run.text:
+                                run.text = run.text.replace(placeholder, str(valor))
 
     # 5. Guardar archivo final en /outputs
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
