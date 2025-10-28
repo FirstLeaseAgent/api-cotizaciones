@@ -124,17 +124,23 @@ def cotizar(data: CotizacionRequest, request: Request):
 
     resultado = {"Nombre": data.nombre, "Cotizaciones": []}
 
-    # Para armar datos que luego mandaremos al documento:
-    # Tomaremos el primer activo (si hay varios, podrías mejorar esto después).
+    # Este dict se va a mandar a la plantilla Word
     valores_para_doc = {
         "nombre": data.nombre,
         "descripcion": "",
         "precio": "",
-        # estos campos los vamos a llenar abajo
+        "fecha": datetime.now().strftime("%d/%m/%Y"),
+        "folio": datetime.now().strftime("%Y%m%d%H%M%S"),
+        # Los valores por plazo (24/36/48) se llenan más abajo:
     }
 
     for activo in data.activos:
         cotizaciones_activo = []
+
+        # Guardamos el nombre y precio del activo para la cotización
+        valores_para_doc["descripcion"] = activo.nombre_activo
+        valores_para_doc["precio"] = formato_miles(activo.valor)
+
         for e in escenarios:
             calculos = calcular_pago_mensual(
                 valor=activo.valor,
@@ -146,99 +152,100 @@ def cotizar(data: CotizacionRequest, request: Request):
                 rentas_deposito=activo.rentas_deposito,
             )
 
+            # Guardamos info cruda por si la quieres en la respuesta JSON
             cotizaciones_activo.append({
                 "Plazo": e["plazo"],
                 **calculos
             })
 
-            # Mapeo de campos esperados por tu plantilla:
-        if e["plazo"] == 24:
-            valores_para_doc.update({
-                # --- Inicial ---
-                "enganche24": formato_miles(calculos["Enganche"]),
-                "comision24": formato_miles(calculos["Comision"]),
-                "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
-                "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
-                "totalinicial24": formato_miles(calculos["Total_Inicial"]),
+            # ====== MUY IMPORTANTE ======
+            # Aquí estamos DENTRO del for e in escenarios.
+            # La indentación de este bloque es crítica.
+            # ============================
+            plazo = str(e["plazo"])
+            if e["plazo"] == 24:
+                valores_para_doc.update({
+                    # Pago inicial
+                    "enganche24": formato_miles(calculos["Enganche"]),
+                    "comision24": formato_miles(calculos["Comision"]),
+                    "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
+                    "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                    "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
+                    "totalinicial24": formato_miles(calculos["Total_Inicial"]),
 
-                # --- Mensualidad ---
-                "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
-                "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
+                    # Mensualidad
+                    "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
+                    "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
+                    "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
 
-                # --- Residual ---
-                "residual24": formato_miles(calculos["Residual"]),
-                "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
-                "totalresidual24": formato_miles(calculos["Total_Residual"]),
+                    # Residual
+                    "residual24": formato_miles(calculos["Residual"]),
+                    "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
+                    "totalresidual24": formato_miles(calculos["Total_Residual"]),
 
-                # --- Totales finales ---
-                "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
-                "totalfinal24": formato_miles(calculos["Total_Final"]),
-            })
+                    # Final
+                    "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
+                    "totalfinal24": formato_miles(calculos["Total_Final"]),
+                })
 
-        if e["plazo"] == 36:
-            valores_para_doc.update({
-                "enganche36": formato_miles(calculos["Enganche"]),
-                "comision36": formato_miles(calculos["Comision"]),
-                "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
-                "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
-                "totalinicial36": formato_miles(calculos["Total_Inicial"]),
+            if e["plazo"] == 36:
+                valores_para_doc.update({
+                    "enganche36": formato_miles(calculos["Enganche"]),
+                    "comision36": formato_miles(calculos["Comision"]),
+                    "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
+                    "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                    "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
+                    "totalinicial36": formato_miles(calculos["Total_Inicial"]),
 
-                "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
-                "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
+                    "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
+                    "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
+                    "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
 
-                "residual36": formato_miles(calculos["Residual"]),
-                "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
-                "totalresidual36": formato_miles(calculos["Total_Residual"]),
+                    "residual36": formato_miles(calculos["Residual"]),
+                    "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
+                    "totalresidual36": formato_miles(calculos["Total_Residual"]),
 
-                "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
-                "totalfinal36": formato_miles(calculos["Total_Final"]),
-            })
+                    "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
+                    "totalfinal36": formato_miles(calculos["Total_Final"]),
+                })
 
-        if e["plazo"] == 48:
-            valores_para_doc.update({
-                "enganche48": formato_miles(calculos["Enganche"]),
-                "comision48": formato_miles(calculos["Comision"]),
-                "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
-                "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
-                "totalinicial48": formato_miles(calculos["Total_Inicial"]),
+            if e["plazo"] == 48:
+                valores_para_doc.update({
+                    "enganche48": formato_miles(calculos["Enganche"]),
+                    "comision48": formato_miles(calculos["Comision"]),
+                    "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
+                    "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                    "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
+                    "totalinicial48": formato_miles(calculos["Total_Inicial"]),
 
-                "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
-                "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
+                    "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
+                    "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
+                    "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
 
-                "residual48": formato_miles(calculos["Residual"]),
-                "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
-                "totalresidual48": formato_miles(calculos["Total_Residual"]),
+                    "residual48": formato_miles(calculos["Residual"]),
+                    "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
+                    "totalresidual48": formato_miles(calculos["Total_Residual"]),
 
-                "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
-                "totalfinal48": formato_miles(calculos["Total_Final"]),
-            })
+                    "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
+                    "totalfinal48": formato_miles(calculos["Total_Final"]),
+                })
 
+        # Guardamos la lista de escenarios calculados de este activo
         resultado["Cotizaciones"].append({
             "Activo": activo.nombre_activo,
             "Detalle": cotizaciones_activo
         })
 
-        # Parte general del documento
-        valores_para_doc["descripcion"] = activo.nombre_activo
-        valores_para_doc["precio"] = formato_miles(activo.valor)
-        valores_para_doc["fecha"] = datetime.now().strftime("%d/%m/%Y")
-        valores_para_doc["folio"] = datetime.now().strftime("%Y%m%d%H%M%S")
+    # ==============================
+    # Generar documento Word
+    # ==============================
 
-    # -------------------------------------------------
-    # Generar documento Word usando primera plantilla disponible
-    # -------------------------------------------------
     with open(DB_PATH, "r") as db_file:
         db_data = json.load(db_file)
 
     plantilla = None
     if db_data["plantillas"]:
-        plantilla = db_data["plantillas"][0]  # tomamos la primera por ahora
+        plantilla = db_data["plantillas"][0]  # Usa la primera plantilla cargada
 
     if plantilla:
         word_info = generar_documento_word_local(
