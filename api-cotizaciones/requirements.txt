@@ -3,3 +3,4 @@ uvicorn
 pydantic
 reportlab
 requests
+python-docx

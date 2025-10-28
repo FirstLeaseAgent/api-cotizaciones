@@ -1,24 +1,42 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from decimal import Decimal, getcontext
+from docx import Document
 from datetime import datetime
-import requests
+import os
+import json
+import uuid
+import requests  # opcional si después hablas con otros servicios internos
+from utils.parser import extraer_variables
 
-# ===========================================================
-# CONFIGURACIÓN BASE
-# ===========================================================
+# -------------------------------------------------
+# Configuración inicial
+# -------------------------------------------------
 getcontext().prec = 28
-app = FastAPI(title="API de Cotización de Arrendamiento")
 
-TEMPLATE_MANAGER_URL = "https://template-manager-3mt1.onrender.com/generate_word"
-TEMPLATE_LIST_URL = "https://template-manager-3mt1.onrender.com/templates"
-PLANTILLA_ID = "2ab9df51-ac07-4c8c-b23a-e430ca1b4b90"  # ID de tu plantilla en Template Manager
+app = FastAPI(
+    title="API Unificada de Cotización y Documentos",
+    description="Servicio único que calcula cotizaciones, administra plantillas y genera documentos Word.",
+)
 
+# Rutas de almacenamiento
+TEMPLATES_DIR = "templates"
+OUTPUT_DIR = "outputs"
+DB_PATH = "db.json"
 
-# ===========================================================
-# MODELOS DE DATOS
-# ===========================================================
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Inicializamos la DB si no existe
+if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
+    with open(DB_PATH, "w") as f:
+        json.dump({"plantillas": []}, f, indent=4)
+
+# -------------------------------------------------
+# MODELOS DE DATOS PARA COTIZACIÓN
+# -------------------------------------------------
 class Activo(BaseModel):
     nombre_activo: str
     valor: float
@@ -27,15 +45,13 @@ class Activo(BaseModel):
     comision: Optional[float] = 3.0
     rentas_deposito: Optional[float] = 1.0
 
-
 class CotizacionRequest(BaseModel):
     nombre: str
     activos: List[Activo]
 
-
-# ===========================================================
-# FUNCIÓN DE CÁLCULO
-# ===========================================================
+# -------------------------------------------------
+# Cálculo financiero
+# -------------------------------------------------
 def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residual, comision, rentas_deposito):
     pv = Decimal(valor / 1.16) * Decimal(1 - enganche / 100)
     r = Decimal(tasa_anual) / Decimal(100 * 12)
@@ -47,22 +63,22 @@ def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residu
     else:
         pago = ((pv - fv * ((1 + r) ** (-n))) * r) / (1 - (1 + r) ** (-n))
 
-    monto_comision = Decimal(comision) / Decimal(100) * pv
-    monto_enganche = Decimal(enganche) / Decimal(100) * Decimal(valor) / Decimal('1.16')
-    monto_deposito = Decimal(rentas_deposito) * pago * Decimal('1.16')
-    monto_residual = (Decimal(valor) / Decimal('1.16')) * Decimal(valor_residual) / Decimal(100)
+    monto_comision = (Decimal(comision) / Decimal(100)) * pv
+    monto_enganche = (Decimal(enganche) / Decimal(100)) * (Decimal(valor) / Decimal("1.16"))
+    monto_deposito = Decimal(rentas_deposito) * pago * Decimal("1.16")
+    monto_residual = (Decimal(valor) / Decimal("1.16")) * (Decimal(valor_residual) / Decimal(100))
 
     subtotal_inicial = monto_enganche + monto_comision + monto_deposito + pago
-    iva_inicial = (monto_enganche + monto_comision + pago) * Decimal('0.16')
+    iva_inicial = (monto_enganche + monto_comision + pago) * Decimal("0.16")
     total_inicial = subtotal_inicial + iva_inicial
 
-    iva_renta = pago * Decimal('0.16')
-    total_renta = pago * Decimal('1.16')
+    iva_renta = pago * Decimal("0.16")
+    total_renta = pago * Decimal("1.16")
 
-    iva_residual = monto_residual * Decimal('0.16')
-    total_residual = monto_residual * Decimal('1.16')
+    iva_residual = monto_residual * Decimal("0.16")
+    total_residual = monto_residual * Decimal("1.16")
 
-    total_final = total_residual - monto_deposito
+    total_final = total_residual - monto_deposito  # depósito se reembolsa
 
     return {
         "Enganche": float(round(monto_enganche, 2)),
@@ -79,113 +95,25 @@ def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residu
         "IVA_Residual": float(round(iva_residual, 2)),
         "Total_Residual": float(round(total_residual, 2)),
         "Reembolso_Deposito": float(round(-monto_deposito, 2)),
-        "Total_Final": float(round(total_final, 2))
+        "Total_Final": float(round(total_final, 2)),
     }
 
-
-# ===========================================================
-# FUNCIÓN: Traducir JSON de Cotización a formato Plantilla
-# ===========================================================
-def traducir_json_a_plantilla(json_cotizacion):
-    """
-    Traduce el JSON de salida de api-cotizaciones al formato esperado por la plantilla de Template Manager.
-    Valida que todas las variables existan antes de enviar la solicitud.
-    """
+# -------------------------------------------------
+# Función auxiliar: formato miles (para documentos)
+# -------------------------------------------------
+def formato_miles(valor):
     try:
-        cotizacion = json_cotizacion["Cotizaciones"][0]
-        detalles = cotizacion["Detalle"]
-        activo = cotizacion.get("Activo", "")
-        nombre = json_cotizacion.get("Nombre", "")
-        precio = cotizacion["Detalle"][0].get("Residual", 0) * 1.16  # o json_cotizacion.get("Precio", 0)
+        num = float(valor)
+        return f"{num:,.2f}"
+    except:
+        return valor
 
-        valores = {
-            "nombre": nombre,
-            "descripcion": activo,
-            "precio": precio,
-            "fecha": datetime.now().strftime("%d/%m/%Y"),
-            "folio": f"COT-{datetime.now().strftime('%Y%m%d%H%M')}",
-            "Be_Hibirido": "",
-            "Be_Gasolina": ""
-        }
-
-        for item in detalles:
-            plazo = str(item.get("Plazo"))
-            valores[f"enganche{plazo}"] = item.get("Enganche", 0)
-            valores[f"comision{plazo}"] = item.get("Comision", 0)
-            valores[f"deposito{plazo}"] = item.get("Renta_en_Deposito", 0)
-            valores[f"mensualidad{plazo}"] = item.get("Renta_Mensual", 0)
-            valores[f"IVAmes{plazo}"] = item.get("IVA_Renta_Mensual", 0)
-            valores[f"totalmes{plazo}"] = item.get("Total_Renta_Mensual", 0)
-            valores[f"subinicial{plazo}"] = item.get("Subtotal_Pago_Inicial", 0)
-            valores[f"IVAinicial{plazo}"] = item.get("IVA_Pago_Inicial", 0)
-            valores[f"totalinicial{plazo}"] = item.get("Total_Inicial", 0)
-            valores[f"totalresidual{plazo}"] = item.get("Residual", 0)
-            valores[f"IVAresidual{plazo}"] = item.get("IVA_Residual", 0)
-            valores[f"residual{plazo}"] = item.get("Total_Residual", 0)
-            valores[f"reembolso{plazo}"] = item.get("Reembolso_Deposito", 0)
-            valores[f"totalfinal{plazo}"] = item.get("Total_Final", 0)
-
-        # --- Validación de variables ---
-        r = requests.get(TEMPLATE_LIST_URL)
-        if r.status_code == 200:
-            data = r.json()
-            plantilla = next((p for p in data if p["id"] == PLANTILLA_ID), None)
-            if plantilla:
-                vars_plantilla = plantilla["variables"]
-                faltantes = [v for v in vars_plantilla if v not in valores]
-                if faltantes:
-                    valores["variables_faltantes"] = faltantes
-        else:
-            valores["variables_faltantes"] = ["Error al consultar Template Manager"]
-
-        return valores
-
-    except Exception as e:
-        raise Exception(f"Error al traducir JSON: {str(e)}")
-
-
-# ===========================================================
-# FUNCIÓN: Generar PDF/Word en Template Manager
-# ===========================================================
-# URL base de Template Manager
-TEMPLATE_MANAGER_URL = "https://template-manager-3mt1.onrender.com/generate_word"
-
-# ID fijo de la plantilla que usarás (puedes obtenerlo desde /templates)
-PLANTILLA_ID = "2ab9df51-ac07-4c8c-b23a-e430ca1b4b90"
-
-def generar_cotizacion_pdf(valores_plantilla):
-    """
-    Envía los valores calculados a Template Manager para generar
-    un documento Word con la plantilla especificada.
-    """
-    payload = {
-        "plantilla_id": PLANTILLA_ID,
-        "valores": valores_plantilla
-    }
-
-    try:
-        response = requests.post(TEMPLATE_MANAGER_URL, json=payload, timeout=60)
-        response.raise_for_status()
-        data = response.json()
-
-        return {
-            "mensaje": "Documento generado correctamente",
-            "descargar_word": data.get("descargar_word"),
-            "archivo_word": data.get("archivo_word"),
-            "faltantes": valores_plantilla.get("variables_faltantes", [])
-        }
-
-    except requests.exceptions.RequestException as e:
-        return {
-            "error": f"Error al conectar con Template Manager: {str(e)}"
-        }
-
-
-# ===========================================================
-# ENDPOINT PRINCIPAL
-# ===========================================================
+# -------------------------------------------------
+# ENDPOINT /cotizar
+# Calcula + genera documento Word con la primera plantilla disponible
+# -------------------------------------------------
 @app.post("/cotizar")
-def cotizar(data: CotizacionRequest):
+def cotizar(data: CotizacionRequest, request: Request):
     escenarios = [
         {"plazo": 24, "residual": 40},
         {"plazo": 36, "residual": 30},
@@ -193,6 +121,15 @@ def cotizar(data: CotizacionRequest):
     ]
 
     resultado = {"Nombre": data.nombre, "Cotizaciones": []}
+
+    # Para armar datos que luego mandaremos al documento:
+    # Tomaremos el primer activo (si hay varios, podrías mejorar esto después).
+    valores_para_doc = {
+        "nombre": data.nombre,
+        "descripcion": "",
+        "precio": "",
+        # estos campos los vamos a llenar abajo
+    }
 
     for activo in data.activos:
         cotizaciones_activo = []
@@ -212,22 +149,185 @@ def cotizar(data: CotizacionRequest):
                 **calculos
             })
 
+            # Mapeo de campos esperados por tu plantilla:
+            if e["plazo"] == 24:
+                valores_para_doc.update({
+                    "enganche24": formato_miles(calculos["Enganche"]),
+                    "comision24": formato_miles(calculos["Comision"]),
+                    "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
+                    "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
+                    "totalinicial24": formato_miles(calculos["Total_Inicial"]),
+                    "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
+                    "totalresidual24": formato_miles(calculos["Total_Residual"]),
+                    "totalfinal24": formato_miles(calculos["Total_Final"]),
+                    "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
+                })
+            if e["plazo"] == 36:
+                valores_para_doc.update({
+                    "enganche36": formato_miles(calculos["Enganche"]),
+                    "comision36": formato_miles(calculos["Comision"]),
+                    "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
+                    "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
+                    "totalinicial36": formato_miles(calculos["Total_Inicial"]),
+                    "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
+                    "totalresidual36": formato_miles(calculos["Total_Residual"]),
+                    "totalfinal36": formato_miles(calculos["Total_Final"]),
+                    "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
+                })
+            if e["plazo"] == 48:
+                valores_para_doc.update({
+                    "enganche48": formato_miles(calculos["Enganche"]),
+                    "comisiion48": formato_miles(calculos["Comision"]),
+                    "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
+                    "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
+                    "totalinicial48": formato_miles(calculos["Total_Inicial"]),
+                    "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
+                    "totalresidual48": formato_miles(calculos["Total_Residual"]),
+                    "totalfinal48": formato_miles(calculos["Total_Final"]),
+                    "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
+                })
+
         resultado["Cotizaciones"].append({
             "Activo": activo.nombre_activo,
             "Detalle": cotizaciones_activo
         })
 
-    # --- Generar PDF con Template Manager ---
-    try:
-        valores_plantilla = traducir_json_a_plantilla(resultado)
-        pdf_data = generar_cotizacion_pdf(valores_plantilla)
-        resultado["documentos"] = pdf_data
-    except Exception as e:
-        resultado["documentos"] = {"error": str(e)}
+        # Parte general del documento
+        valores_para_doc["descripcion"] = activo.nombre_activo
+        valores_para_doc["precio"] = formato_miles(activo.valor)
+        valores_para_doc["fecha"] = datetime.now().strftime("%d/%m/%Y")
+        valores_para_doc["folio"] = datetime.now().strftime("%Y%m%d%H%M%S")
 
-    return resultado
+    # -------------------------------------------------
+    # Generar documento Word usando primera plantilla disponible
+    # -------------------------------------------------
+    with open(DB_PATH, "r") as db_file:
+        db_data = json.load(db_file)
 
+    plantilla = None
+    if db_data["plantillas"]:
+        plantilla = db_data["plantillas"][0]  # tomamos la primera por ahora
+
+    if plantilla:
+        word_info = generar_documento_word_local(
+            plantilla_id=plantilla["id"],
+            valores=valores_para_doc,
+            request=request
+        )
+        documentos = word_info
+    else:
+        documentos = {
+            "aviso": "No hay plantilla registrada en el sistema todavía. Usa /upload_template primero."
+        }
+
+    return {
+        "Nombre": data.nombre,
+        "Cotizaciones": resultado["Cotizaciones"],
+        "documentos": documentos
+    }
+
+# -------------------------------------------------
+# Lógica interna para generar documento Word
+# (antes estaba en Template Manager)
+# -------------------------------------------------
+def generar_documento_word_local(plantilla_id: str, valores: dict, request: Request):
+    # 1. Cargar DB
+    with open(DB_PATH, "r") as f:
+        data = json.load(f)
+
+    # 2. Buscar plantilla por ID
+    plantilla = next((p for p in data["plantillas"] if p["id"] == plantilla_id), None)
+    if not plantilla:
+        raise HTTPException(status_code=404, detail="Plantilla no encontrada")
+
+    plantilla_path = os.path.join(TEMPLATES_DIR, plantilla["nombre"])
+    if not os.path.exists(plantilla_path):
+        raise HTTPException(status_code=404, detail="Archivo de plantilla no encontrado")
+
+    # 3. Cargar Word
+    doc = Document(plantilla_path)
+
+    # 4. Reemplazar variables {{var}} en párrafos y tablas
+    for var, valor in valores.items():
+        marcador = f"{{{{{var}}}}}"
+        for p in doc.paragraphs:
+            if marcador in p.text:
+                p.text = p.text.replace(marcador, str(valor))
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if marcador in cell.text:
+                        cell.text = cell.text.replace(marcador, str(valor))
+
+    # 5. Guardar archivo final en /outputs
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    word_name = f"cotizacion_{timestamp}.docx"
+    word_path = os.path.join(OUTPUT_DIR, word_name)
+    doc.save(word_path)
+
+    # 6. Construir URL de descarga
+    base_url = str(request.base_url).rstrip("/")
+    download_url = f"{base_url}/download_word/{word_name}"
+
+    return {
+        "archivo_word": word_name,
+        "descargar_word": download_url,
+    }
+
+# -------------------------------------------------
+# ENDPOINTS de gestión de plantillas (antes: Template Manager)
+# -------------------------------------------------
+
+@app.post("/upload_template")
+async def upload_template(file: UploadFile = File(...)):
+    """
+    Sube una plantilla .docx, extrae variables {{ }} y la registra en db.json
+    """
+    if not file.filename.endswith(".docx"):
+        raise HTTPException(status_code=400, detail="Solo se permiten archivos .docx")
+
+    plantilla_id = str(uuid.uuid4())
+    file_path = os.path.join(TEMPLATES_DIR, file.filename)
+
+    with open(file_path, "wb") as f:
+        f.write(await file.read())
+
+    variables = extraer_variables(file_path)
+
+    with open(DB_PATH, "r+") as db_file:
+        data = json.load(db_file)
+        data["plantillas"].append({
+            "id": plantilla_id,
+            "nombre": file.filename,
+            "variables": variables
+        })
+        db_file.seek(0)
+        db_file.truncate()
+        json.dump(data, db_file, indent=4)
+
+    return {
+        "id": plantilla_id,
+        "nombre_archivo": file.filename,
+        "variables_detectadas": variables
+    }
+
+@app.get("/templates")
+def list_templates():
+    with open(DB_PATH, "r") as f:
+        data = json.load(f)
+    return data["plantillas"]
+
+@app.get("/download_word/{filename}")
+def download_word(filename: str):
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    return FileResponse(
+        file_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename
+    )
 
 @app.get("/")
 def root():
-    return {"mensaje": "API de Cotizaciones de Arrendamiento funcionando correctamente"}
+    return {"mensaje": "API Unificada funcionando correctamente"}

@@ -1,0 +1,71 @@
+{
+    "plantillas": [
+        {
+            "id": "57ef2f6e-2adb-41a7-8075-548db33c53bb",
+            "nombre": "Plantilla_Prueba.docx",
+            "variables": [
+                "renta_36",
+                "valor",
+                "fecha",
+                "renta_24",
+                "nombre",
+                "renta_48"
+            ]
+        },
+        {
+            "id": "2ab9df51-ac07-4c8c-b23a-e430ca1b4b90",
+            "nombre": "Plantilla_Cotizacion.docx",
+            "variables": [
+                "reembolso24",
+                "descripcion",
+                "Be_Hibirido",
+                "totalinicial36",
+                "IVAresidual36",
+                "mensualidad24",
+                "residual48",
+                "reembolso36",
+                "folio",
+                "comision36",
+                "residual36",
+                "IVAresidual48",
+                "subinicial24",
+                "deposito36",
+                "comision48",
+                "IVAmes36",
+                "mensualidad36",
+                "Be_Gasolina",
+                "totalmes48",
+                "mensualidad48",
+                "IVAresidual24",
+                "totalinicial48",
+                "totalresidual48",
+                "fecha",
+                "IVAinicial48",
+                "totalinicial24",
+                "deposito24",
+                "IVAinicial36",
+                "precio",
+                "totalmes36",
+                "IVAmes24",
+                "reembolso48",
+                "totalfinal36",
+                "totalresidual24",
+                "IVAmes48",
+                "residual24",
+                "enganche48",
+                "subinicial48",
+                "totalfinal48",
+                "enganche36",
+                "enganche24",
+                "IVAinicial24",
+                "totalfinal24",
+                "comision24",
+                "nombre",
+                "subinicial36",
+                "deposito48",
+                "totalmes24",
+                "totalresidual36"
+            ]
+        }
+    ]
+}
