@@ -152,70 +152,72 @@ def cotizar(data: CotizacionRequest, request: Request):
             })
 
             # Mapeo de campos esperados por tu plantilla:
-             if e["plazo"] == 24:
-                valores_para_doc.update({
-                    # --- Inicial ---
-                    "enganche24": formato_miles(calculos["Enganche"]),
-                    "comision24": formato_miles(calculos["Comision"]),
-                    "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
-                    "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                    "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
-                    "totalinicial24": formato_miles(calculos["Total_Inicial"]),
+        if e["plazo"] == 24:
+            valores_para_doc.update({
+                # --- Inicial ---
+                "enganche24": formato_miles(calculos["Enganche"]),
+                "comision24": formato_miles(calculos["Comision"]),
+                "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
+                "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
+                "totalinicial24": formato_miles(calculos["Total_Inicial"]),
 
-                    # --- Mensualidad ---
-                    "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
-                    "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
-                    "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
+                # --- Mensualidad ---
+                "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
+                "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
+                "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
 
-                    # --- Residual ---
-                    "residual24": formato_miles(calculos["Residual"]),
-                    "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
-                    "totalresidual24": formato_miles(calculos["Total_Residual"]),
+                # --- Residual ---
+                "residual24": formato_miles(calculos["Residual"]),
+                "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
+                "totalresidual24": formato_miles(calculos["Total_Residual"]),
 
-                    # --- Totales finales ---
-                    "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
-                    "totalfinal24": formato_miles(calculos["Total_Final"]),
-                })
-            if e["plazo"] == 36:
-                valores_para_doc.update({
-                    "enganche36": formato_miles(calculos["Enganche"]),
-                    "comision36": formato_miles(calculos["Comision"]),
-                    "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
-                    "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                    "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
-                    "totalinicial36": formato_miles(calculos["Total_Inicial"]),
+                # --- Totales finales ---
+                "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
+                "totalfinal24": formato_miles(calculos["Total_Final"]),
+            })
 
-                    "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
-                    "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
-                    "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
+        if e["plazo"] == 36:
+            valores_para_doc.update({
+                "enganche36": formato_miles(calculos["Enganche"]),
+                "comision36": formato_miles(calculos["Comision"]),
+                "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
+                "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
+                "totalinicial36": formato_miles(calculos["Total_Inicial"]),
 
-                    "residual36": formato_miles(calculos["Residual"]),
-                    "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
-                    "totalresidual36": formato_miles(calculos["Total_Residual"]),
+                "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
+                "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
+                "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
 
-                    "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
-                    "totalfinal36": formato_miles(calculos["Total_Final"]),
-                })
-            if e["plazo"] == 48:
-                valores_para_doc.update({
-                    "enganche48": formato_miles(calculos["Enganche"]),
-                    "comision48": formato_miles(calculos["Comision"]),
-                    "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
-                    "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                    "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
-                    "totalinicial48": formato_miles(calculos["Total_Inicial"]),
+                "residual36": formato_miles(calculos["Residual"]),
+                "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
+                "totalresidual36": formato_miles(calculos["Total_Residual"]),
 
-                    "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
-                    "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
-                    "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
+                "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
+                "totalfinal36": formato_miles(calculos["Total_Final"]),
+            })
 
-                    "residual48": formato_miles(calculos["Residual"]),
-                    "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
-                    "totalresidual48": formato_miles(calculos["Total_Residual"]),
+        if e["plazo"] == 48:
+            valores_para_doc.update({
+                "enganche48": formato_miles(calculos["Enganche"]),
+                "comision48": formato_miles(calculos["Comision"]),
+                "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
+                "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
+                "totalinicial48": formato_miles(calculos["Total_Inicial"]),
 
-                    "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
-                    "totalfinal48": formato_miles(calculos["Total_Final"]),
-                })
+                "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
+                "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
+                "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
+
+                "residual48": formato_miles(calculos["Residual"]),
+                "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
+                "totalresidual48": formato_miles(calculos["Total_Residual"]),
+
+                "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
+                "totalfinal48": formato_miles(calculos["Total_Final"]),
+            })
 
         resultado["Cotizaciones"].append({
             "Activo": activo.nombre_activo,
