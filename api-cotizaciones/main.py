@@ -270,6 +270,8 @@ def cotizar(data: CotizacionRequest, request: Request):
 # (antes estaba en Template Manager)
 # -------------------------------------------------
 def generar_documento_word_local(plantilla_id: str, valores: dict, request: Request):
+    import requests
+
     # 1. Cargar DB
     with open(DB_PATH, "r") as f:
         data = json.load(f)
@@ -280,13 +282,23 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
         raise HTTPException(status_code=404, detail="Plantilla no encontrada")
 
     plantilla_path = os.path.join(TEMPLATES_DIR, plantilla["nombre"])
-    if not os.path.exists(plantilla_path):
-        raise HTTPException(status_code=404, detail="Archivo de plantilla no encontrado")
 
-    # 3. Cargar Word
+    # 3. Si la plantilla no existe localmente, descargarla desde GitHub
+    if not os.path.exists(plantilla_path):
+        GITHUB_RAW_URL = "https://raw.githubusercontent.com/FirstLeaseAgent/api-cotizaciones/main/api-cotizaciones/templates/Plantilla_Cotizacion.docx"
+        try:
+            response = requests.get(GITHUB_RAW_URL, timeout=30)
+            response.raise_for_status()
+            with open(plantilla_path, "wb") as f:
+                f.write(response.content)
+            print(f"✅ Plantilla descargada desde GitHub: {plantilla['nombre']}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error al descargar plantilla desde GitHub: {e}")
+
+    # 4. Cargar Word
     doc = Document(plantilla_path)
 
-    # 4.--- Reemplazo de variables manteniendo formato (runs) ---
+    # 5. Reemplazo de variables (manteniendo formato)
     for p in doc.paragraphs:
         for run in p.runs:
             for var, valor in valores.items():
@@ -304,13 +316,13 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
                             if placeholder in run.text:
                                 run.text = run.text.replace(placeholder, str(valor))
 
-    # 5. Guardar archivo final en /outputs
+    # 6. Guardar archivo final en /outputs
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     word_name = f"cotizacion_{timestamp}.docx"
     word_path = os.path.join(OUTPUT_DIR, word_name)
     doc.save(word_path)
 
-    # 6. Construir URL de descarga
+    # 7. Construir URL de descarga
     base_url = str(request.base_url).rstrip("/")
     download_url = f"{base_url}/download_word/{word_name}"
 
