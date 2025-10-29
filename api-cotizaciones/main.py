@@ -32,6 +32,11 @@ DB_PATH = "db.json"
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# Crear base de datos si no existe o está vacía
+if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
+    with open(DB_PATH, "w") as f:
+        json.dump({"plantillas": []}, f, indent=4)
+        
 #--------------------------------------------------
 # Verificación y autocarga de plantilla Github
 #--------------------------------------------------
