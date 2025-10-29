@@ -28,6 +28,10 @@ TEMPLATES_DIR = "templates"
 OUTPUT_DIR = "outputs"
 DB_PATH = "db.json"
 
+# Crear carpetas necesarias
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 #--------------------------------------------------
 # Verificación y autocarga de plantilla Github
 #--------------------------------------------------
@@ -64,9 +68,7 @@ def ensure_template_available():
 # Ejecutar al inicio
 ensure_template_available()
 
-# Crear carpetas necesarias
-os.makedirs(TEMPLATES_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 
 # Inicializamos la DB si no existe
 if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
