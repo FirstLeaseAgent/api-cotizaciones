@@ -28,6 +28,43 @@ TEMPLATES_DIR = "templates"
 OUTPUT_DIR = "outputs"
 DB_PATH = "db.json"
 
+#--------------------------------------------------
+# Verificación y autocarga de plantilla Github
+#--------------------------------------------------
+
+GITHUB_RAW_URL = "https://github.com/FirstLeaseAgent/api-cotizaciones/raw/refs/heads/main/api-cotizaciones/templates/Plantilla_Cotizacion.docx"
+TEMPLATE_NAME = "Plantilla_Cotizacion.docx"
+
+def ensure_template_available():
+    # 1. Descarga plantilla si no existe localmente
+    template_path = os.path.join(TEMPLATES_DIR, TEMPLATE_NAME)
+    if not os.path.exists(template_path):
+        print("🔄 Descargando plantilla desde GitHub...")
+        resp = requests.get(GITHUB_RAW_URL)
+        resp.raise_for_status()
+        with open(template_path, "wb") as f:
+            f.write(resp.content)
+        print("✅ Plantilla descargada correctamente.")
+
+    # 2. Asegura que exista un registro en db.json
+    with open(DB_PATH, "r+") as db_file:
+        data = json.load(db_file)
+        if not data["plantillas"]:
+            plantilla_id = str(uuid.uuid4())
+            data["plantillas"].append({
+                "id": plantilla_id,
+                "nombre": TEMPLATE_NAME,
+                "variables": []
+            })
+            db_file.seek(0)
+            db_file.truncate()
+            json.dump(data, db_file, indent=4)
+            print("✅ Registro de plantilla agregado a db.json")
+
+# Ejecutar al inicio
+ensure_template_available()
+
+# Crear carpetas necesarias
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
