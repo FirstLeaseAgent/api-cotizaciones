@@ -36,7 +36,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
     with open(DB_PATH, "w") as f:
         json.dump({"plantillas": []}, f, indent=4)
-        
+
 #--------------------------------------------------
 # Verificación y autocarga de plantilla Github
 #--------------------------------------------------
@@ -359,10 +359,26 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
                             placeholder = f"{{{{{var}}}}}"
                             if placeholder in run.text:
                                 run.text = run.text.replace(placeholder, str(valor))
+    # 6. Guardar archivo final en /outputs usando el folio
+    # Usa el folio proporcionado en los valores (si existe)
+    folio = valores.get("folio", datetime.now().strftime("%Y%m%d_%H%M%S"))
 
-    # 6. Guardar archivo final en /outputs
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    word_name = f"cotizacion_{timestamp}.docx"
+    # Reemplazar {{folio}} dentro del documento Word
+    for p in doc.paragraphs:
+        for run in p.runs:
+            if "{{folio}}" in run.text:
+                run.text = run.text.replace("{{folio}}", str(folio))
+
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    for run in p.runs:
+                        if "{{folio}}" in run.text:
+                            run.text = run.text.replace("{{folio}}", str(folio))
+
+    # Nombre del archivo con el folio
+    word_name = f"cotizacion_{folio}.docx"
     word_path = os.path.join(OUTPUT_DIR, word_name)
     doc.save(word_path)
 
@@ -370,9 +386,13 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
     base_url = str(request.base_url).rstrip("/")
     download_url = f"{base_url}/download_word/{word_name}"
 
+    # Log opcional para Render
+    print(f"🧾 Documento generado con folio {folio}")
+
     return {
         "archivo_word": word_name,
         "descargar_word": download_url,
+        "folio": folio
     }
 
 # -------------------------------------------------
