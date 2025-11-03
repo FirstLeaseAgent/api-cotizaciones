@@ -3,14 +3,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Optional
 from decimal import Decimal, getcontext
 from docx import Document
 from datetime import datetime
 import os
 import json
 import uuid
-import requests  # opcional si después hablas con otros servicios internos
+import requests
 from utils.parser import extraer_variables
 
 # -------------------------------------------------
@@ -23,16 +23,13 @@ app = FastAPI(
     description="Servicio único que calcula cotizaciones, administra plantillas y genera documentos Word.",
 )
 
-# Rutas de almacenamiento
 TEMPLATES_DIR = "templates"
 OUTPUT_DIR = "outputs"
 DB_PATH = "db.json"
 
-# Crear carpetas necesarias
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Crear base de datos si no existe o está vacía
 if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
     with open(DB_PATH, "w") as f:
         json.dump({"plantillas": []}, f, indent=4)
@@ -40,12 +37,10 @@ if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
 #--------------------------------------------------
 # Verificación y autocarga de plantilla Github
 #--------------------------------------------------
-
 GITHUB_RAW_URL = "https://github.com/FirstLeaseAgent/api-cotizaciones/raw/refs/heads/main/api-cotizaciones/templates/Plantilla_Cotizacion.docx"
 TEMPLATE_NAME = "Plantilla_Cotizacion.docx"
 
 def ensure_template_available():
-    # 1. Descarga plantilla si no existe localmente
     template_path = os.path.join(TEMPLATES_DIR, TEMPLATE_NAME)
     if not os.path.exists(template_path):
         print("🔄 Descargando plantilla desde GitHub...")
@@ -55,7 +50,6 @@ def ensure_template_available():
             f.write(resp.content)
         print("✅ Plantilla descargada correctamente.")
 
-    # 2. Asegura que exista un registro en db.json
     with open(DB_PATH, "r+") as db_file:
         data = json.load(db_file)
         if not data["plantillas"]:
@@ -70,30 +64,19 @@ def ensure_template_available():
             json.dump(data, db_file, indent=4)
             print("✅ Registro de plantilla agregado a db.json")
 
-# Ejecutar al inicio
 ensure_template_available()
-
-
-
-# Inicializamos la DB si no existe
-if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
-    with open(DB_PATH, "w") as f:
-        json.dump({"plantillas": []}, f, indent=4)
 
 # -------------------------------------------------
 # MODELOS DE DATOS PARA COTIZACIÓN
 # -------------------------------------------------
-class Activo(BaseModel):
+class CotizacionRequest(BaseModel):
+    nombre: str
     nombre_activo: str
     valor: float
     enganche: Optional[float] = 10.0
     tasa_anual: Optional[float] = 30.0
     comision: Optional[float] = 3.0
     rentas_deposito: Optional[float] = 1.0
-
-class CotizacionRequest(BaseModel):
-    nombre: str
-    activos: List[Activo]
 
 # -------------------------------------------------
 # Cálculo financiero
@@ -124,7 +107,7 @@ def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residu
     iva_residual = monto_residual * Decimal("0.16")
     total_residual = monto_residual * Decimal("1.16")
 
-    total_final = total_residual - monto_deposito  # depósito se reembolsa
+    total_final = total_residual - monto_deposito
 
     return {
         "Enganche": float(round(monto_enganche, 2)),
@@ -145,7 +128,7 @@ def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residu
     }
 
 # -------------------------------------------------
-# Función auxiliar: formato miles (para documentos)
+# Formato miles
 # -------------------------------------------------
 def formato_miles(valor):
     try:
@@ -166,119 +149,104 @@ def cotizar(data: CotizacionRequest, request: Request):
         {"plazo": 48, "residual": 25},
     ]
 
-    resultado = {"Nombre": data.nombre, "Cotizaciones": []}
-
     # Este dict se va a mandar a la plantilla Word
     valores_para_doc = {
         "nombre": data.nombre,
-        "descripcion": "",
-        "precio": "",
+        "descripcion": data.nombre_activo,
+        "precio": formato_miles(data.valor),
         "fecha": datetime.now().strftime("%d/%m/%Y"),
         "folio": datetime.now().strftime("%Y%m%d%H%M%S"),
-        # Los valores por plazo (24/36/48) se llenan más abajo:
     }
 
-    for activo in data.activos:
-        cotizaciones_activo = []
+    detalle_resultado = []
 
-        # Guardamos el nombre y precio del activo para la cotización
-        valores_para_doc["descripcion"] = activo.nombre_activo
-        valores_para_doc["precio"] = formato_miles(activo.valor)
+    # Como ahora solo hay UN activo, usamos directamente data.*
+    for e in escenarios:
+        calculos = calcular_pago_mensual(
+            valor=data.valor,
+            enganche=data.enganche,
+            tasa_anual=data.tasa_anual,
+            plazo_meses=e["plazo"],
+            valor_residual=e["residual"],
+            comision=data.comision,
+            rentas_deposito=data.rentas_deposito,
+        )
 
-        for e in escenarios:
-            calculos = calcular_pago_mensual(
-                valor=activo.valor,
-                enganche=activo.enganche,
-                tasa_anual=activo.tasa_anual,
-                plazo_meses=e["plazo"],
-                valor_residual=e["residual"],
-                comision=activo.comision,
-                rentas_deposito=activo.rentas_deposito,
-            )
+        # Guardamos info para la respuesta JSON
+        detalle_resultado.append({
+            "Plazo": e["plazo"],
+            **calculos
+        })
 
-            # Guardamos info cruda por si la quieres en la respuesta JSON
-            cotizaciones_activo.append({
-                "Plazo": e["plazo"],
-                **calculos
+        # ====== MUY IMPORTANTE ======
+        # Mantener mismos nombres de variables que ya usaba tu plantilla
+        # ============================
+        if e["plazo"] == 24:
+            valores_para_doc.update({
+                # Pago inicial
+                "enganche24": formato_miles(calculos["Enganche"]),
+                "comision24": formato_miles(calculos["Comision"]),
+                "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
+                "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
+                "totalinicial24": formato_miles(calculos["Total_Inicial"]),
+
+                # Mensualidad
+                "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
+                "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
+                "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
+
+                # Residual
+                "residual24": formato_miles(calculos["Residual"]),
+                "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
+                "totalresidual24": formato_miles(calculos["Total_Residual"]),
+
+                # Final
+                "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
+                "totalfinal24": formato_miles(calculos["Total_Final"]),
             })
 
-            # ====== MUY IMPORTANTE ======
-            # Aquí estamos DENTRO del for e in escenarios.
-            # La indentación de este bloque es crítica.
-            # ============================
-            plazo = str(e["plazo"])
-            if e["plazo"] == 24:
-                valores_para_doc.update({
-                    # Pago inicial
-                    "enganche24": formato_miles(calculos["Enganche"]),
-                    "comision24": formato_miles(calculos["Comision"]),
-                    "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
-                    "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                    "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
-                    "totalinicial24": formato_miles(calculos["Total_Inicial"]),
+        if e["plazo"] == 36:
+            valores_para_doc.update({
+                "enganche36": formato_miles(calculos["Enganche"]),
+                "comision36": formato_miles(calculos["Comision"]),
+                "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
+                "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
+                "totalinicial36": formato_miles(calculos["Total_Inicial"]),
 
-                    # Mensualidad
-                    "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
-                    "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
-                    "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
+                "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
+                "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
+                "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
 
-                    # Residual
-                    "residual24": formato_miles(calculos["Residual"]),
-                    "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
-                    "totalresidual24": formato_miles(calculos["Total_Residual"]),
+                "residual36": formato_miles(calculos["Residual"]),
+                "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
+                "totalresidual36": formato_miles(calculos["Total_Residual"]),
 
-                    # Final
-                    "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
-                    "totalfinal24": formato_miles(calculos["Total_Final"]),
-                })
+                "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
+                "totalfinal36": formato_miles(calculos["Total_Final"]),
+            })
 
-            if e["plazo"] == 36:
-                valores_para_doc.update({
-                    "enganche36": formato_miles(calculos["Enganche"]),
-                    "comision36": formato_miles(calculos["Comision"]),
-                    "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
-                    "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                    "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
-                    "totalinicial36": formato_miles(calculos["Total_Inicial"]),
+        if e["plazo"] == 48:
+            valores_para_doc.update({
+                "enganche48": formato_miles(calculos["Enganche"]),
+                "comision48": formato_miles(calculos["Comision"]),
+                "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
+                "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
+                "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
+                "totalinicial48": formato_miles(calculos["Total_Inicial"]),
 
-                    "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
-                    "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
-                    "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
+                "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
+                "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
+                "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
 
-                    "residual36": formato_miles(calculos["Residual"]),
-                    "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
-                    "totalresidual36": formato_miles(calculos["Total_Residual"]),
+                "residual48": formato_miles(calculos["Residual"]),
+                "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
+                "totalresidual48": formato_miles(calculos["Total_Residual"]),
 
-                    "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
-                    "totalfinal36": formato_miles(calculos["Total_Final"]),
-                })
-
-            if e["plazo"] == 48:
-                valores_para_doc.update({
-                    "enganche48": formato_miles(calculos["Enganche"]),
-                    "comision48": formato_miles(calculos["Comision"]),
-                    "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
-                    "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                    "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
-                    "totalinicial48": formato_miles(calculos["Total_Inicial"]),
-
-                    "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
-                    "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
-                    "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
-
-                    "residual48": formato_miles(calculos["Residual"]),
-                    "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
-                    "totalresidual48": formato_miles(calculos["Total_Residual"]),
-
-                    "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
-                    "totalfinal48": formato_miles(calculos["Total_Final"]),
-                })
-
-        # Guardamos la lista de escenarios calculados de este activo
-        resultado["Cotizaciones"].append({
-            "Activo": activo.nombre_activo,
-            "Detalle": cotizaciones_activo
-        })
+                "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
+                "totalfinal48": formato_miles(calculos["Total_Final"]),
+            })
 
     # ==============================
     # Generar documento Word
@@ -303,46 +271,34 @@ def cotizar(data: CotizacionRequest, request: Request):
             "aviso": "No hay plantilla registrada en el sistema todavía. Usa /upload_template primero."
         }
 
+    # 🔚 Respuesta final con estructura nueva
     return {
         "Nombre": data.nombre,
-        "Cotizaciones": resultado["Cotizaciones"],
+        "Activo": data.nombre_activo,
+        "Valor": round(data.valor, 2),  # valor original de entrada
+        "Detalle": detalle_resultado,
         "documentos": documentos
     }
 
 # -------------------------------------------------
-# Lógica interna para generar documento Word
-# (antes estaba en Template Manager)
+# Generar documento Word
 # -------------------------------------------------
 def generar_documento_word_local(plantilla_id: str, valores: dict, request: Request):
-    import requests
-
-    # 1. Cargar DB
     with open(DB_PATH, "r") as f:
         data = json.load(f)
-
-    # 2. Buscar plantilla por ID
     plantilla = next((p for p in data["plantillas"] if p["id"] == plantilla_id), None)
     if not plantilla:
         raise HTTPException(status_code=404, detail="Plantilla no encontrada")
 
     plantilla_path = os.path.join(TEMPLATES_DIR, plantilla["nombre"])
-
-    # 3. Si la plantilla no existe localmente, descargarla desde GitHub
     if not os.path.exists(plantilla_path):
         GITHUB_RAW_URL = "https://raw.githubusercontent.com/FirstLeaseAgent/api-cotizaciones/main/api-cotizaciones/templates/Plantilla_Cotizacion.docx"
-        try:
-            response = requests.get(GITHUB_RAW_URL, timeout=30)
-            response.raise_for_status()
-            with open(plantilla_path, "wb") as f:
-                f.write(response.content)
-            print(f"✅ Plantilla descargada desde GitHub: {plantilla['nombre']}")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error al descargar plantilla desde GitHub: {e}")
+        resp = requests.get(GITHUB_RAW_URL)
+        resp.raise_for_status()
+        with open(plantilla_path, "wb") as f:
+            f.write(resp.content)
 
-    # 4. Cargar Word
     doc = Document(plantilla_path)
-
-    # 5. Reemplazo de variables (manteniendo formato)
     for p in doc.paragraphs:
         for run in p.runs:
             for var, valor in valores.items():
@@ -359,35 +315,14 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
                             placeholder = f"{{{{{var}}}}}"
                             if placeholder in run.text:
                                 run.text = run.text.replace(placeholder, str(valor))
-    # 6. Guardar archivo final en /outputs usando el folio
-    # Usa el folio proporcionado en los valores (si existe)
+
     folio = valores.get("folio", datetime.now().strftime("%Y%m%d_%H%M%S"))
-
-    # Reemplazar {{folio}} dentro del documento Word
-    for p in doc.paragraphs:
-        for run in p.runs:
-            if "{{folio}}" in run.text:
-                run.text = run.text.replace("{{folio}}", str(folio))
-
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    for run in p.runs:
-                        if "{{folio}}" in run.text:
-                            run.text = run.text.replace("{{folio}}", str(folio))
-
-    # Nombre del archivo con el folio
     word_name = f"cotizacion_{folio}.docx"
     word_path = os.path.join(OUTPUT_DIR, word_name)
     doc.save(word_path)
 
-    # 7. Construir URL de descarga
     base_url = str(request.base_url).rstrip("/")
     download_url = f"{base_url}/download_word/{word_name}"
-
-    # Log opcional para Render
-    print(f"🧾 Documento generado con folio {folio}")
 
     return {
         "archivo_word": word_name,
@@ -396,25 +331,19 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
     }
 
 # -------------------------------------------------
-# ENDPOINTS de gestión de plantillas (antes: Template Manager)
+# ENDPOINTS plantillas
 # -------------------------------------------------
-
 @app.post("/upload_template")
 async def upload_template(file: UploadFile = File(...)):
-    """
-    Sube una plantilla .docx, extrae variables {{ }} y la registra en db.json
-    """
     if not file.filename.endswith(".docx"):
         raise HTTPException(status_code=400, detail="Solo se permiten archivos .docx")
 
     plantilla_id = str(uuid.uuid4())
     file_path = os.path.join(TEMPLATES_DIR, file.filename)
-
     with open(file_path, "wb") as f:
         f.write(await file.read())
 
     variables = extraer_variables(file_path)
-
     with open(DB_PATH, "r+") as db_file:
         data = json.load(db_file)
         data["plantillas"].append({
@@ -426,11 +355,7 @@ async def upload_template(file: UploadFile = File(...)):
         db_file.truncate()
         json.dump(data, db_file, indent=4)
 
-    return {
-        "id": plantilla_id,
-        "nombre_archivo": file.filename,
-        "variables_detectadas": variables
-    }
+    return {"id": plantilla_id, "nombre_archivo": file.filename, "variables_detectadas": variables}
 
 @app.get("/templates")
 def list_templates():
