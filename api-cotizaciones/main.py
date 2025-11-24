@@ -12,6 +12,8 @@ import json
 import uuid
 import requests
 from utils.parser import extraer_variables
+import subprocess
+
 
 # -------------------------------------------------
 # Configuración inicial
@@ -136,6 +138,34 @@ def formato_miles(valor):
         return f"{num:,.2f}"
     except:
         return valor
+
+#Nueva función para convertir a PDF
+def convertir_pdf(word_path: str, output_dir: str):
+    """
+    Convierte un archivo .docx a .pdf usando LibreOffice (soffice).
+    Retorna (nombre_archivo_pdf, ruta_pdf).
+    """
+    comando = [
+        "soffice",
+        "--headless",
+        "--convert-to", "pdf",
+        "--outdir", output_dir,
+        word_path
+    ]
+
+    try:
+        subprocess.run(comando, check=True)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Error al convertir a PDF: {e}")
+
+    pdf_name = os.path.splitext(os.path.basename(word_path))[0] + ".pdf"
+    pdf_path = os.path.join(output_dir, pdf_name)
+
+    if not os.path.exists(pdf_path):
+        raise HTTPException(status_code=500, detail="No se generó el archivo PDF")
+
+    return pdf_name, pdf_path
+
 
 # -------------------------------------------------
 # ENDPOINT /cotizar
@@ -321,14 +351,34 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
     word_path = os.path.join(OUTPUT_DIR, word_name)
     doc.save(word_path)
 
+    # URL base del servicio
     base_url = str(request.base_url).rstrip("/")
-    download_url = f"{base_url}/download_word/{word_name}"
 
-    return {
+    # Link para descargar el Word (igual que antes)
+    download_word = f"{base_url}/download_word/{word_name}"
+
+    # Intentar generar el PDF
+    pdf_name = None
+    download_pdf = None
+    try:
+        pdf_name, pdf_path = convertir_pdf(word_path, OUTPUT_DIR)
+        download_pdf = f"{base_url}/download_pdf/{pdf_name}"
+    except HTTPException:
+        # Si falla la conversión a PDF, no rompemos todo; solo no regresamos el PDF
+        download_pdf = None
+
+    resultado = {
         "archivo_word": word_name,
-        "descargar_word": download_url,
+        "descargar_word": download_word,
         "folio": folio
     }
+
+    if download_pdf:
+        resultado["archivo_pdf"] = pdf_name
+        resultado["descargar_pdf"] = download_pdf
+
+    return resultado
+
 
 # -------------------------------------------------
 # ENDPOINTS plantillas
@@ -371,6 +421,17 @@ def download_word(filename: str):
     return FileResponse(
         file_path,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename
+    )
+
+@app.get("/download_pdf/{filename}")
+def download_pdf(filename: str):
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    return FileResponse(
+        file_path,
+        media_type="application/pdf",
         filename=filename
     )
 
