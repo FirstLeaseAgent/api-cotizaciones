@@ -1,18 +1,6 @@
 {
     "plantillas": [
         {
-            "id": "57ef2f6e-2adb-41a7-8075-548db33c53bb",
-            "nombre": "Plantilla_Prueba.docx",
-            "variables": [
-                "renta_36",
-                "valor",
-                "fecha",
-                "renta_24",
-                "nombre",
-                "renta_48"
-            ]
-        },
-        {
             "id": "2ab9df51-ac07-4c8c-b23a-e430ca1b4b90",
             "nombre": "Plantilla_Cotizacion.docx",
             "variables": [
