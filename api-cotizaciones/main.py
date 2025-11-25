@@ -352,7 +352,15 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
     doc.save(word_path)
 
     # URL base del servicio
-    base_url = str(request.base_url).rstrip("/")
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    if forwarded_proto:
+        protocol = forwarded_proto
+    else:
+        protocol = request.url.scheme
+
+    host = request.headers.get("host")
+    base_url = f"{protocol}://{host}"
+
 
     # Link para descargar el Word (igual que antes)
     download_word = f"{base_url}/download_word/{word_name}"
