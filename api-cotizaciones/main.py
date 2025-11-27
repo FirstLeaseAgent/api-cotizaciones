@@ -183,17 +183,16 @@ def calcular_pago_mensual(
         monto_seguro_contado = Decimal("0")
 
     # -----------------------------
-    # GESTORÍA FINANCIADA (solo 12 meses)
+    # GESTORÍA FINANCIADA (mismo plazo, vf=0)
     # -----------------------------
     pv_gestoria = gestoria
+    n_gest = Decimal(plazo_meses)
+
     if pv_gestoria > 0:
-        n_gest = Decimal(12)
         if r == 0:
             pago_gestoria = -pv_gestoria / n_gest
         else:
-            pago_gestoria = (
-                (pv_gestoria - Decimal(0) * ((1 + r) ** (-n_gest))) * r
-            ) / (1 - (1 + r) ** (-n_gest))
+            pago_gestoria = (pv_gestoria * r) / (1 - (1 + r) ** (-n_gest))
     else:
         pago_gestoria = Decimal("0")
 
@@ -204,14 +203,14 @@ def calcular_pago_mensual(
     monto_enganche = (Decimal(enganche) / Decimal(100)) * valor_sin_iva
 
     # Subtotal mensual (sin gestoría): renta + seguro financiado
-    subtotal_mensual = pago + pago_seguro
+    subtotal_mensual = pago + pago_seguro + pago_gestoria
 
     # Renta en depósito (sobre la renta total con seguro, sin gestoría)
     total_mensual_sin_gestoria_con_iva = subtotal_mensual * Decimal("1.16")
     monto_deposito = Decimal(rentas_deposito) * total_mensual_sin_gestoria_con_iva
 
     # Primera mensualidad (incluye gestoría + renta + seguro)
-    primera_mensualidad = subtotal_mensual + pago_gestoria
+    primera_mensualidad = subtotal_mensual
 
     # Subtotal inicial = enganche + comisión + depósito + 1a mensualidad + seguro contado
     subtotal_inicial = (
