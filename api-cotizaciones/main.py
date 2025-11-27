@@ -343,7 +343,7 @@ def cotizar(data: CotizacionRequest, request: Request):
             f"subinicial{p}": formato_miles(calc["Subtotal_Pago_Inicial"]),
             f"IVAinicial{p}": formato_miles(calc["IVA_Pago_Inicial"]),
             f"totalinicial{p}": formato_miles(calc["Total_Inicial"]),
-            f"primeramensualidad{p}": formato_miles(calc["Primera_Mensualidad"]),
+            f"primerames{p}": formato_miles(calc["Primera_Mensualidad"]),
             f"segurocontado{p}": formato_miles(calc["Seguro_Contado"]),
 
             f"mensualidad{p}": formato_miles(calc["Renta_Mensual"]),
@@ -351,7 +351,7 @@ def cotizar(data: CotizacionRequest, request: Request):
             f"totalmes{p}": formato_miles(calc["Total_Mensual"]),
 
             # nuevas equivalencias
-            f"renta_plan{p}": formato_miles(calc["Renta_Plan"]),
+            f"rentaplan{p}": formato_miles(calc["Renta_Plan"]),
             f"subtotalmes{p}": formato_miles(calc["Subtotal_Mensual"]),
             f"IVAmensual{p}": formato_miles(calc["IVA_Mensual"]),
             f"totalmensual{p}": formato_miles(calc["Total_Mensual"]),
