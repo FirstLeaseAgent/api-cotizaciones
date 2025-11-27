@@ -343,7 +343,7 @@ def cotizar(data: CotizacionRequest, request: Request):
             f"subinicial{p}": formato_miles(calc["Subtotal_Pago_Inicial"]),
             f"IVAinicial{p}": formato_miles(calc["IVA_Pago_Inicial"]),
             f"totalinicial{p}": formato_miles(calc["Total_Inicial"]),
-            f"primerames{p}": formato_miles(calc["Primera_Mensualidad"]),
+            f"primermes{p}": formato_miles(calc["Primera_Mensualidad"]),
             f"segurocontado{p}": formato_miles(calc["Seguro_Contado"]),
 
             f"mensualidad{p}": formato_miles(calc["Renta_Mensual"]),
