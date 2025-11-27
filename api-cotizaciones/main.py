@@ -1,61 +1,70 @@
 import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Request
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 from decimal import Decimal, getcontext
 from docx import Document
 from datetime import datetime
-import os
+from zoneinfo import ZoneInfo
 import json
 import uuid
 import requests
-from utils.parser import extraer_variables
 import subprocess
+from utils.parser import extraer_variables
 
 
 # -------------------------------------------------
-# Configuración inicial
+# CONFIGURACIÓN GENERAL
 # -------------------------------------------------
 getcontext().prec = 28
 
 app = FastAPI(
     title="API Unificada de Cotización y Documentos",
-    description="Servicio único que calcula cotizaciones, administra plantillas y genera documentos Word.",
+    description="Servicio que calcula cotizaciones, administra plantillas y genera documentos Word/PDF."
 )
 
 TEMPLATES_DIR = "templates"
 OUTPUT_DIR = "outputs"
 DB_PATH = "db.json"
 DIV_PLAN = Decimal("48")   # 48%
-GESTORIA = Decimal("2000") # $2,000.00 de gestoría
+GESTORIA = Decimal("2000") # $2,000
+TIMEZONE = ZoneInfo("America/Mexico_City")
 
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
-    with open(DB_PATH, "w") as f:
-        json.dump({"plantillas": []}, f, indent=4)
-
-#--------------------------------------------------
-# Verificación y autocarga de plantilla Github
-#--------------------------------------------------
-GITHUB_RAW_URL = "https://github.com/FirstLeaseAgent/api-cotizaciones/raw/refs/heads/main/api-cotizaciones/templates/Plantilla_Cotizacion.docx"
+# -------------------------------------------------
+# PLANTILLA PRINCIPAL (carga automática desde GitHub)
+# -------------------------------------------------
+GITHUB_RAW_URL = (
+    "https://github.com/FirstLeaseAgent/api-cotizaciones/raw/refs/heads/main/"
+    "api-cotizaciones/templates/Plantilla_Cotizacion.docx"
+)
 TEMPLATE_NAME = "Plantilla_Cotizacion.docx"
 
+
 def ensure_template_available():
+    if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
+        with open(DB_PATH, "w") as f:
+            json.dump({"plantillas": []}, f, indent=4)
+
     template_path = os.path.join(TEMPLATES_DIR, TEMPLATE_NAME)
+
+    # Descarga si no existe
     if not os.path.exists(template_path):
-        print("🔄 Descargando plantilla desde GitHub...")
+        print("🔄 Descargando plantilla desde GitHub…")
         resp = requests.get(GITHUB_RAW_URL)
         resp.raise_for_status()
         with open(template_path, "wb") as f:
             f.write(resp.content)
-        print("✅ Plantilla descargada correctamente.")
+        print("✅ Plantilla descargada.")
 
-    with open(DB_PATH, "r+") as db_file:
-        data = json.load(db_file)
+    # Registrar plantilla en DB
+    with open(DB_PATH, "r+") as f:
+        data = json.load(f)
         if not data["plantillas"]:
             plantilla_id = str(uuid.uuid4())
             data["plantillas"].append({
@@ -63,15 +72,17 @@ def ensure_template_available():
                 "nombre": TEMPLATE_NAME,
                 "variables": []
             })
-            db_file.seek(0)
-            db_file.truncate()
-            json.dump(data, db_file, indent=4)
-            print("✅ Registro de plantilla agregado a db.json")
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f, indent=4)
+            print("✅ Plantilla registrada en db.json")
+
 
 ensure_template_available()
 
+
 # -------------------------------------------------
-# MODELOS DE DATOS PARA COTIZACIÓN
+# MODELO DE ENTRADA
 # -------------------------------------------------
 class CotizacionRequest(BaseModel):
     nombre: str
@@ -82,53 +93,45 @@ class CotizacionRequest(BaseModel):
     comision: Optional[float] = 3.0
     rentas_deposito: Optional[float] = 1.0
 
-    # 🔹 Nuevo: seguro anual opcional (monto). Si viene None, se calcula con la tabla.
-    seguro_anual: Optional[float] = None
+    seguro_anual: Optional[float] = None      # None o -1 = se calcula
+    seguro_contado: Optional[bool] = None     # True = contado / False = financiado
 
-    # 🔹 Nuevo: si es True, el seguro se paga de contado y se suma al pago inicial.
-    # Si es False o None, se asume seguro financiado.
-    seguro_contado: Optional[bool] = None
 
 # -------------------------------------------------
-# Cálculo financiero
+# SEGURO ANUAL
 # -------------------------------------------------
-def calcular_seguro_anual(valor_con_iva: float, seguro_anual_entrada: Optional[float]) -> Decimal:
-    """
-    Devuelve el monto de seguro anual (sin IVA) como Decimal.
+def calcular_seguro_anual(valor_con_iva: float, entrada: Optional[float]) -> Decimal:
 
-    - Si seguro_anual_entrada es None → calcular tabla
-    - Si seguro_anual_entrada es -1 → calcular tabla
-    - Si seguro_anual_entrada = 0 → usar 0
-    - Si seguro_anual_entrada > 0 → usar valor proporcionado
-    """
-
-    # ➤ NUEVA CONDICIÓN
-    if seguro_anual_entrada is None or seguro_anual_entrada == -1:
-        # No viene o se fuerza a tabla → calcular
+    # Se fuerza cálculo por tabla
+    if entrada is None or entrada == -1:
         valor_sin_iva = Decimal(valor_con_iva) / Decimal("1.16")
 
-        if valor_sin_iva < Decimal("500000"):
-            pct = Decimal("0.04")      # 4.00%
-        elif valor_sin_iva < Decimal("750000"):
-            pct = Decimal("0.035")     # 3.50%
-        elif valor_sin_iva < Decimal("1000000"):
-            pct = Decimal("0.03")      # 3.00%
-        elif valor_sin_iva < Decimal("1500000"):
-            pct = Decimal("0.0275")    # 2.75%
-        elif valor_sin_iva < Decimal("5000000"):
-            pct = Decimal("0.025")     # 2.50%
+        if valor_sin_iva < 500000:
+            pct = Decimal("0.04")
+        elif valor_sin_iva < 750000:
+            pct = Decimal("0.035")
+        elif valor_sin_iva < 1_000_000:
+            pct = Decimal("0.03")
+        elif valor_sin_iva < 1_500_000:
+            pct = Decimal("0.0275")
+        elif valor_sin_iva < 5_000_000:
+            pct = Decimal("0.025")
         else:
             pct = Decimal("0.025")
 
         return (valor_sin_iva * pct).quantize(Decimal("0.01"))
 
-    # ➤ Si viene 0 → seguro gratuito
-    if seguro_anual_entrada == 0:
+    # Seguro gratuito
+    if entrada == 0:
         return Decimal("0")
 
-    # ➤ Si viene valor positivo → usarlo
-    return Decimal(seguro_anual_entrada)
+    # Valor proporcionado
+    return Decimal(entrada)
 
+
+# -------------------------------------------------
+# CÁLCULO FINANCIERO COMPLETO
+# -------------------------------------------------
 def calcular_pago_mensual(
     valor,
     enganche,
@@ -137,82 +140,57 @@ def calcular_pago_mensual(
     valor_residual,
     comision,
     rentas_deposito,
-    seguro_anual: Decimal,
-    seguro_contado_flag: bool,
-    div_plan: Decimal,
-    gestoria: Decimal,
+    seguro_anual,
+    seguro_contado_flag,
+    div_plan,
+    gestoria,
 ):
-    # Valor sin IVA del activo
-    valor_sin_iva = Decimal(valor) / Decimal("1.16")
 
-    # Interés y plazos
-    r = Decimal(tasa_anual) / Decimal(100 * 12)
+    valor_sin_iva = Decimal(valor) / Decimal("1.16")
+    r = Decimal(tasa_anual) / Decimal(1200)
     n = Decimal(plazo_meses)
 
-    # Valor presente del financiamiento del activo
-    pv = valor_sin_iva * Decimal(1 - enganche / 100)
-    fv = valor_sin_iva * Decimal(valor_residual / 100)
+    # Valor presente del activo
+    pv = valor_sin_iva * (1 - Decimal(enganche) / 100)
+    fv = valor_sin_iva * (Decimal(valor_residual) / 100)
 
-    # Pago de renta (solo activo, sin seguro, sin gestoria)
+    # ------------------------- PAGO DE RENTA -------------------------
     if r == 0:
         pago = -(pv - fv) / n
     else:
         pago = ((pv - fv * ((1 + r) ** (-n))) * r) / (1 - (1 + r) ** (-n))
 
-    # -----------------------------
-    # SEGURO
-    # -----------------------------
-    pv_seguro = seguro_anual  # ya viene sin IVA
+    # ------------------------- SEGURO -------------------------
+    pv_seguro = seguro_anual
 
     if seguro_contado_flag and pv_seguro > 0:
-        # Seguro pagado de contado
         pago_seguro = Decimal("0")
         monto_seguro_contado = pv_seguro
     else:
-        # Seguro financiado a 12 meses
         n_seg = Decimal(12)
-        if pv_seguro == 0:
-            pago_seguro = Decimal("0")
+        if r == 0:
+            pago_seguro = -pv_seguro / n_seg
         else:
-            if r == 0:
-                pago_seguro = -pv_seguro / n_seg
-            else:
-                pago_seguro = ((pv_seguro - Decimal(0) * ((1 + r) ** (-n_seg))) * r) / (
-                    1 - (1 + r) ** (-n_seg)
-                )
+            pago_seguro = (pv_seguro * r) / (1 - (1 + r) ** (-n_seg))
         monto_seguro_contado = Decimal("0")
 
-    # -----------------------------
-    # GESTORÍA FINANCIADA (mismo plazo, vf=0)
-    # -----------------------------
-    pv_gestoria = gestoria
-    n_gest = Decimal(plazo_meses)
-
-    if pv_gestoria > 0:
-        if r == 0:
-            pago_gestoria = -pv_gestoria / n_gest
-        else:
-            pago_gestoria = (pv_gestoria * r) / (1 - (1 + r) ** (-n_gest))
+    # ------------------------- GESTORÍA -------------------------
+    pv_gest = gestoria
+    if r == 0:
+        pago_gestoria = -pv_gest / n
     else:
-        pago_gestoria = Decimal("0")
+        pago_gestoria = (pv_gest * r) / (1 - (1 + r) ** (-n))
 
-    # -----------------------------
-    # CARGOS INICIALES
-    # -----------------------------
-    monto_comision = (Decimal(comision) / Decimal(100)) * pv
-    monto_enganche = (Decimal(enganche) / Decimal(100)) * valor_sin_iva
-
-    # Subtotal mensual (sin gestoría): renta + seguro financiado
+    # ------------------------- PAGO TOTAL MENSUAL -------------------------
     subtotal_mensual = pago + pago_seguro + pago_gestoria
 
-    # Renta en depósito (sobre la renta total con seguro, sin gestoría)
     total_mensual_sin_gestoria_con_iva = subtotal_mensual * Decimal("1.16")
     monto_deposito = Decimal(rentas_deposito) * total_mensual_sin_gestoria_con_iva
-
-    # Primera mensualidad (incluye gestoría + renta + seguro)
     primera_mensualidad = subtotal_mensual
 
-    # Subtotal inicial = enganche + comisión + depósito + 1a mensualidad + seguro contado
+    monto_enganche = valor_sin_iva * Decimal(enganche / 100)
+    monto_comision = pv * Decimal(comision / 100)
+
     subtotal_inicial = (
         monto_enganche
         + monto_comision
@@ -221,7 +199,6 @@ def calcular_pago_mensual(
         + monto_seguro_contado
     )
 
-    # IVA inicial (sobre enganche + comisión + primera mensualidad + seguro contado)
     iva_inicial = (
         monto_enganche
         + monto_comision
@@ -231,22 +208,17 @@ def calcular_pago_mensual(
 
     total_inicial = subtotal_inicial + iva_inicial
 
-    # -----------------------------
-    # PLAN vs RENTA
-    # -----------------------------
-    div = div_plan / Decimal(100)  # 0.48
+    # ------------------------- PLAN VS RENTA -------------------------
+    div = div_plan / Decimal(100)
 
     renta_plan = subtotal_mensual * div
-    renta_mensual = subtotal_mensual * (Decimal("1") - div)
+    renta_mensual = subtotal_mensual * (1 - div)
 
-    subtotal_mensual_out = renta_plan + renta_mensual  # es igual a subtotal_mensual
-    iva_mensual = subtotal_mensual_out * Decimal("0.16")
-    total_mensual = subtotal_mensual_out * Decimal("1.16")
+    iva_mensual = subtotal_mensual * Decimal("0.16")
+    total_mensual = subtotal_mensual * Decimal("1.16")
 
-    # -----------------------------
-    # RESIDUAL Y TOTALES FINALES
-    # -----------------------------
-    monto_residual = valor_sin_iva * Decimal(valor_residual / 100)
+    # ------------------------- RESIDUAL -------------------------
+    monto_residual = valor_sin_iva * (Decimal(valor_residual) / 100)
     iva_residual = monto_residual * Decimal("0.16")
     total_residual = monto_residual * Decimal("1.16")
 
@@ -262,10 +234,9 @@ def calcular_pago_mensual(
         "IVA_Pago_Inicial": float(round(iva_inicial, 2)),
         "Total_Inicial": float(round(total_inicial, 2)),
 
-        # 🔹 Nuevas / modificadas
         "Renta_Plan": float(round(renta_plan, 2)),
         "Renta_Mensual": float(round(renta_mensual, 2)),
-        "Subtotal_Mensual": float(round(subtotal_mensual_out, 2)),
+        "Subtotal_Mensual": float(round(subtotal_mensual, 2)),
         "IVA_Mensual": float(round(iva_mensual, 2)),
         "Total_Mensual": float(round(total_mensual, 2)),
 
@@ -276,332 +247,256 @@ def calcular_pago_mensual(
         "Total_Final": float(round(total_final, 2)),
     }
 
-# -------------------------------------------------
-# Formato miles
-# -------------------------------------------------
-def formato_miles(valor):
-    try:
-        num = float(valor)
-        return f"{num:,.2f}"
-    except:
-        return valor
 
-#Nueva función para convertir a PDF
-def convertir_pdf(word_path: str, output_dir: str):
-    """
-    Convierte un archivo .docx a .pdf usando LibreOffice (soffice).
-    Retorna (nombre_archivo_pdf, ruta_pdf).
-    """
+# -------------------------------------------------
+# FORMATO MILES
+# -------------------------------------------------
+def formato_miles(v):
+    try:
+        return f"{float(v):,.2f}"
+    except:
+        return v
+
+
+# -------------------------------------------------
+# CONVERTIR WORD → PDF
+# -------------------------------------------------
+def convertir_pdf(path_word, output_dir):
     comando = [
         "soffice",
         "--headless",
         "--convert-to", "pdf",
         "--outdir", output_dir,
-        word_path
+        path_word
     ]
 
     try:
         subprocess.run(comando, check=True)
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Error al convertir a PDF: {e}")
+        raise HTTPException(500, f"Error al convertir a PDF: {e}")
 
-    pdf_name = os.path.splitext(os.path.basename(word_path))[0] + ".pdf"
+    pdf_name = os.path.splitext(os.path.basename(path_word))[0] + ".pdf"
     pdf_path = os.path.join(output_dir, pdf_name)
 
     if not os.path.exists(pdf_path):
-        raise HTTPException(status_code=500, detail="No se generó el archivo PDF")
+        raise HTTPException(500, "No se generó el archivo PDF")
 
     return pdf_name, pdf_path
 
 
 # -------------------------------------------------
-# ENDPOINT /cotizar
-# Calcula + genera documento Word con la primera plantilla disponible
+# ENDPOINT PRINCIPAL /cotizar
 # -------------------------------------------------
 @app.post("/cotizar")
 def cotizar(data: CotizacionRequest, request: Request):
-        # 🔹 Nombre y activo siempre en MAYÚSCULAS
+
     nombre_upper = data.nombre.upper()
     activo_upper = data.nombre_activo.upper()
+
+    # Folio único consistente para JSON + Word + PDF
+    folio = datetime.now(TIMEZONE).strftime("%Y%m%d_%H%M%S")
+
     escenarios = [
         {"plazo": 24, "residual": 40},
         {"plazo": 36, "residual": 30},
         {"plazo": 48, "residual": 25},
     ]
-     # 🔹 Seguro anual (sin IVA) a usar en todos los escenarios
-    seguro_anual_decimal = calcular_seguro_anual(
-        valor_con_iva=data.valor,
-        seguro_anual_entrada=data.seguro_anual,
-    )
 
+    seguro_anual = calcular_seguro_anual(data.valor, data.seguro_anual)
     seguro_contado_flag = bool(data.seguro_contado)
 
-    # Este dict se va a mandar a la plantilla Word
     valores_para_doc = {
         "nombre": nombre_upper,
         "descripcion": activo_upper,
         "precio": formato_miles(data.valor),
-        "fecha": datetime.now().strftime("%d/%m/%Y"),
-        "folio": datetime.now().strftime("%Y%m%d%H%M%S"),
+        "fecha": datetime.now(TIMEZONE).strftime("%d/%m/%Y"),
+        "folio": folio,
     }
-    detalle_resultado = []
 
-    # Como ahora solo hay UN activo, usamos directamente data.*
-    for e in escenarios:
-        calculos = calcular_pago_mensual(
+    detalle = []
+
+    # CALCULO DE LOS 3 PLAZOS
+    for esc in escenarios:
+        calc = calcular_pago_mensual(
             valor=data.valor,
             enganche=data.enganche,
             tasa_anual=data.tasa_anual,
-            plazo_meses=e["plazo"],
-            valor_residual=e["residual"],
+            plazo_meses=esc["plazo"],
+            valor_residual=esc["residual"],
             comision=data.comision,
             rentas_deposito=data.rentas_deposito,
-            seguro_anual=seguro_anual_decimal,
+            seguro_anual=seguro_anual,
             seguro_contado_flag=seguro_contado_flag,
             div_plan=DIV_PLAN,
             gestoria=GESTORIA,
         )
-        # Guardamos info para la respuesta JSON
-        detalle_resultado.append({
-            "Plazo": e["plazo"],
-            **calculos
+
+        detalle.append({"Plazo": esc["plazo"], **calc})
+
+        p = esc["plazo"]
+
+        # Variables Word por plazo
+        valores_para_doc.update({
+            f"enganche{p}": formato_miles(calc["Enganche"]),
+            f"comision{p}": formato_miles(calc["Comision"]),
+            f"deposito{p}": formato_miles(calc["Renta_en_Deposito"]),
+            f"subinicial{p}": formato_miles(calc["Subtotal_Pago_Inicial"]),
+            f"IVAinicial{p}": formato_miles(calc["IVA_Pago_Inicial"]),
+            f"totalinicial{p}": formato_miles(calc["Total_Inicial"]),
+            f"primeramensualidad{p}": formato_miles(calc["Primera_Mensualidad"]),
+            f"segurocontado{p}": formato_miles(calc["Seguro_Contado"]),
+
+            f"mensualidad{p}": formato_miles(calc["Renta_Mensual"]),
+            f"IVAmes{p}": formato_miles(calc["IVA_Mensual"]),
+            f"totalmes{p}": formato_miles(calc["Total_Mensual"]),
+
+            # nuevas equivalencias
+            f"renta_plan{p}": formato_miles(calc["Renta_Plan"]),
+            f"subtotalmes{p}": formato_miles(calc["Subtotal_Mensual"]),
+            f"IVAmensual{p}": formato_miles(calc["IVA_Mensual"]),
+            f"totalmensual{p}": formato_miles(calc["Total_Mensual"]),
+
+            f"residual{p}": formato_miles(calc["Residual"]),
+            f"IVAresidual{p}": formato_miles(calc["IVA_Residual"]),
+            f"totalresidual{p}": formato_miles(calc["Total_Residual"]),
+
+            f"reembolso{p}": formato_miles(calc["Reembolso_Deposito"]),
+            f"totalfinal{p}": formato_miles(calc["Total_Final"]),
         })
 
-        # ====== MUY IMPORTANTE ======
-        # Mantener mismos nombres de variables que ya usaba tu plantilla
-        # ============================
-        if e["plazo"] == 24:
-            valores_para_doc.update({
-                # Pago inicial
-                "enganche24": formato_miles(calculos["Enganche"]),
-                "comision24": formato_miles(calculos["Comision"]),
-                "deposito24": formato_miles(calculos["Renta_en_Deposito"]),
-                "subinicial24": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                "IVAinicial24": formato_miles(calculos["IVA_Pago_Inicial"]),
-                "totalinicial24": formato_miles(calculos["Total_Inicial"]),
+    # GENERAR DOCUMENTO
+    with open(DB_PATH, "r") as f:
+        data_db = json.load(f)
 
-                # Mensualidad
-                "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes24": formato_miles(calculos["IVA_Mensual"]),
-                "totalmes24": formato_miles(calculos["Total_Mensual"]),
+    plantilla = data_db["plantillas"][0]
 
-                # Residual
-                "residual24": formato_miles(calculos["Residual"]),
-                "IVAresidual24": formato_miles(calculos["IVA_Residual"]),
-                "totalresidual24": formato_miles(calculos["Total_Residual"]),
+    word_info = generar_documento_word_local(
+        plantilla_id=plantilla["id"],
+        valores=valores_para_doc,
+        request=request
+    )
 
-                # Final
-                "reembolso24": formato_miles(calculos["Reembolso_Deposito"]),
-                "totalfinal24": formato_miles(calculos["Total_Final"]),
-            })
-
-        if e["plazo"] == 36:
-            valores_para_doc.update({
-                "enganche36": formato_miles(calculos["Enganche"]),
-                "comision36": formato_miles(calculos["Comision"]),
-                "deposito36": formato_miles(calculos["Renta_en_Deposito"]),
-                "subinicial36": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                "IVAinicial36": formato_miles(calculos["IVA_Pago_Inicial"]),
-                "totalinicial36": formato_miles(calculos["Total_Inicial"]),
-
-                "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes36": formato_miles(calculos["IVA_Mensual"]),
-                "totalmes36": formato_miles(calculos["Total_Mensual"]),
-
-                "residual36": formato_miles(calculos["Residual"]),
-                "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
-                "totalresidual36": formato_miles(calculos["Total_Residual"]),
-
-                "reembolso36": formato_miles(calculos["Reembolso_Deposito"]),
-                "totalfinal36": formato_miles(calculos["Total_Final"]),
-            })
-
-        if e["plazo"] == 48:
-            valores_para_doc.update({
-                "enganche48": formato_miles(calculos["Enganche"]),
-                "comision48": formato_miles(calculos["Comision"]),
-                "deposito48": formato_miles(calculos["Renta_en_Deposito"]),
-                "subinicial48": formato_miles(calculos["Subtotal_Pago_Inicial"]),
-                "IVAinicial48": formato_miles(calculos["IVA_Pago_Inicial"]),
-                "totalinicial48": formato_miles(calculos["Total_Inicial"]),
-
-                "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes48": formato_miles(calculos["IVA_Mensual"]),
-                "totalmes48": formato_miles(calculos["Total_Mensual"]),
-
-                "residual48": formato_miles(calculos["Residual"]),
-                "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
-                "totalresidual48": formato_miles(calculos["Total_Residual"]),
-
-                "reembolso48": formato_miles(calculos["Reembolso_Deposito"]),
-                "totalfinal48": formato_miles(calculos["Total_Final"]),
-            })
-
-    # ==============================
-    # Generar documento Word
-    # ==============================
-
-    with open(DB_PATH, "r") as db_file:
-        db_data = json.load(db_file)
-
-    plantilla = None
-    if db_data["plantillas"]:
-        plantilla = db_data["plantillas"][0]  # Usa la primera plantilla cargada
-
-    if plantilla:
-        word_info = generar_documento_word_local(
-            plantilla_id=plantilla["id"],
-            valores=valores_para_doc,
-            request=request
-        )
-        documentos = word_info
-    else:
-        documentos = {
-            "aviso": "No hay plantilla registrada en el sistema todavía. Usa /upload_template primero."
-        }
-
-    # 🔚 Respuesta final con estructura nueva
+    # RESPUESTA FINAL
     return {
-        "Nombre": data.nombre,
-        "Activo": data.nombre_activo,
-        "Valor": round(data.valor, 2),  # valor original de entrada
-        "Detalle": detalle_resultado,
-        "documentos": documentos
+        "Nombre": nombre_upper,
+        "Activo": activo_upper,
+        "Valor": round(data.valor, 2),
+        "Detalle": detalle,
+        "documentos": word_info
     }
 
+
 # -------------------------------------------------
-# Generar documento Word
+# GENERAR WORD + PDF
 # -------------------------------------------------
 def generar_documento_word_local(plantilla_id: str, valores: dict, request: Request):
     with open(DB_PATH, "r") as f:
         data = json.load(f)
-    plantilla = next((p for p in data["plantillas"] if p["id"] == plantilla_id), None)
-    if not plantilla:
-        raise HTTPException(status_code=404, detail="Plantilla no encontrada")
 
+    plantilla = next(p for p in data["plantillas"] if p["id"] == plantilla_id)
     plantilla_path = os.path.join(TEMPLATES_DIR, plantilla["nombre"])
-    if not os.path.exists(plantilla_path):
-        GITHUB_RAW_URL = "https://raw.githubusercontent.com/FirstLeaseAgent/api-cotizaciones/main/api-cotizaciones/templates/Plantilla_Cotizacion.docx"
-        resp = requests.get(GITHUB_RAW_URL)
-        resp.raise_for_status()
-        with open(plantilla_path, "wb") as f:
-            f.write(resp.content)
 
     doc = Document(plantilla_path)
+
+    # Reemplazo texto
     for p in doc.paragraphs:
         for run in p.runs:
-            for var, valor in valores.items():
+            for var, val in valores.items():
                 placeholder = f"{{{{{var}}}}}"
                 if placeholder in run.text:
-                    run.text = run.text.replace(placeholder, str(valor))
+                    run.text = run.text.replace(placeholder, str(val))
 
-    for table in doc.tables:
-        for row in table.rows:
+    for t in doc.tables:
+        for row in t.rows:
             for cell in row.cells:
                 for p in cell.paragraphs:
                     for run in p.runs:
-                        for var, valor in valores.items():
+                        for var, val in valores.items():
                             placeholder = f"{{{{{var}}}}}"
                             if placeholder in run.text:
-                                run.text = run.text.replace(placeholder, str(valor))
+                                run.text = run.text.replace(placeholder, str(val))
 
-    folio = valores.get("folio", datetime.now().strftime("%Y%m%d_%H%M%S"))
-    word_name = f"cotizacion_{folio}.docx"
+    folio = valores["folio"]
+    word_name = f"FirstLease-Cotizacion-{folio}.docx"
     word_path = os.path.join(OUTPUT_DIR, word_name)
     doc.save(word_path)
 
-    # URL base del servicio
-    forwarded_proto = request.headers.get("x-forwarded-proto")
-    if forwarded_proto:
-        protocol = forwarded_proto
-    else:
-        protocol = request.url.scheme
-
+    # URL base
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("host")
-    base_url = f"{protocol}://{host}"
+    base = f"{proto}://{host}"
 
+    url_word = f"{base}/download_word/{word_name}"
 
-    # Link para descargar el Word (igual que antes)
-    download_word = f"{base_url}/download_word/{word_name}"
+    # Intentar PDF
+    pdf_name, pdf_path = convertir_pdf(word_path, OUTPUT_DIR)
+    url_pdf = f"{base}/download_pdf/{pdf_name}"
 
-    # Intentar generar el PDF
-    pdf_name = None
-    download_pdf = None
-    try:
-        pdf_name, pdf_path = convertir_pdf(word_path, OUTPUT_DIR)
-        download_pdf = f"{base_url}/download_pdf/{pdf_name}"
-    except HTTPException:
-        # Si falla la conversión a PDF, no rompemos todo; solo no regresamos el PDF
-        download_pdf = None
-
-    resultado = {
+    return {
         "archivo_word": word_name,
-        "descargar_word": download_word,
-        "folio": folio
+        "descargar_word": url_word,
+        "folio": folio,
+        "archivo_pdf": pdf_name,
+        "descargar_pdf": url_pdf
     }
 
-    if download_pdf:
-        resultado["archivo_pdf"] = pdf_name
-        resultado["descargar_pdf"] = download_pdf
-
-    return resultado
-
 
 # -------------------------------------------------
-# ENDPOINTS plantillas
+# ENDPOINTS AUXILIARES
 # -------------------------------------------------
+@app.get("/download_word/{filename}")
+def download_word(filename: str):
+    path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Archivo no encontrado")
+    return FileResponse(path, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+@app.get("/download_pdf/{filename}")
+def download_pdf(filename: str):
+    path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "Archivo no encontrado")
+    return FileResponse(path, media_type="application/pdf")
+
+
 @app.post("/upload_template")
 async def upload_template(file: UploadFile = File(...)):
     if not file.filename.endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Solo se permiten archivos .docx")
+        raise HTTPException(400, "Solo se permiten archivos .docx")
 
     plantilla_id = str(uuid.uuid4())
-    file_path = os.path.join(TEMPLATES_DIR, file.filename)
-    with open(file_path, "wb") as f:
+    path = os.path.join(TEMPLATES_DIR, file.filename)
+
+    with open(path, "wb") as f:
         f.write(await file.read())
 
-    variables = extraer_variables(file_path)
-    with open(DB_PATH, "r+") as db_file:
-        data = json.load(db_file)
+    variables = extraer_variables(path)
+
+    with open(DB_PATH, "r+") as f:
+        data = json.load(f)
         data["plantillas"].append({
             "id": plantilla_id,
             "nombre": file.filename,
             "variables": variables
         })
-        db_file.seek(0)
-        db_file.truncate()
-        json.dump(data, db_file, indent=4)
+        f.seek(0)
+        f.truncate()
+        json.dump(data, f, indent=4)
 
-    return {"id": plantilla_id, "nombre_archivo": file.filename, "variables_detectadas": variables}
+    return {
+        "id": plantilla_id,
+        "nombre_archivo": file.filename,
+        "variables_detectadas": variables
+    }
+
 
 @app.get("/templates")
 def list_templates():
     with open(DB_PATH, "r") as f:
-        data = json.load(f)
-    return data["plantillas"]
+        return json.load(f)["plantillas"]
 
-@app.get("/download_word/{filename}")
-def download_word(filename: str):
-    file_path = os.path.join(OUTPUT_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
-    return FileResponse(
-        file_path,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=filename
-    )
-
-@app.get("/download_pdf/{filename}")
-def download_pdf(filename: str):
-    file_path = os.path.join(OUTPUT_DIR, filename)
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="Archivo no encontrado")
-    return FileResponse(
-        file_path,
-        media_type="application/pdf",
-        filename=filename
-    )
 
 @app.get("/")
 def root():
-    return {"mensaje": "API Unificada funcionando correctamente"}
+    return {"mensaje": "API funcionando correctamente 🚀"}
