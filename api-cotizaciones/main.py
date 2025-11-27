@@ -28,6 +28,8 @@ app = FastAPI(
 TEMPLATES_DIR = "templates"
 OUTPUT_DIR = "outputs"
 DB_PATH = "db.json"
+DIV_PLAN = Decimal("48")   # 48%
+GESTORIA = Decimal("2000") # $2,000.00 de gestoría
 
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -80,32 +82,172 @@ class CotizacionRequest(BaseModel):
     comision: Optional[float] = 3.0
     rentas_deposito: Optional[float] = 1.0
 
+    # 🔹 Nuevo: seguro anual opcional (monto). Si viene None, se calcula con la tabla.
+    seguro_anual: Optional[float] = None
+
+    # 🔹 Nuevo: si es True, el seguro se paga de contado y se suma al pago inicial.
+    # Si es False o None, se asume seguro financiado.
+    seguro_contado: Optional[bool] = None
+
 # -------------------------------------------------
 # Cálculo financiero
 # -------------------------------------------------
-def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residual, comision, rentas_deposito):
-    pv = Decimal(valor / 1.16) * Decimal(1 - enganche / 100)
+def calcular_seguro_anual(valor_con_iva: float, seguro_anual_entrada: Optional[float]) -> Decimal:
+    """
+    Devuelve el monto de seguro anual (sin IVA) como Decimal.
+
+    - Si seguro_anual_entrada es None → calcular tabla
+    - Si seguro_anual_entrada es -1 → calcular tabla
+    - Si seguro_anual_entrada = 0 → usar 0
+    - Si seguro_anual_entrada > 0 → usar valor proporcionado
+    """
+
+    # ➤ NUEVA CONDICIÓN
+    if seguro_anual_entrada is None or seguro_anual_entrada == -1:
+        # No viene o se fuerza a tabla → calcular
+        valor_sin_iva = Decimal(valor_con_iva) / Decimal("1.16")
+
+        if valor_sin_iva < Decimal("500000"):
+            pct = Decimal("0.04")      # 4.00%
+        elif valor_sin_iva < Decimal("750000"):
+            pct = Decimal("0.035")     # 3.50%
+        elif valor_sin_iva < Decimal("1000000"):
+            pct = Decimal("0.03")      # 3.00%
+        elif valor_sin_iva < Decimal("1500000"):
+            pct = Decimal("0.0275")    # 2.75%
+        elif valor_sin_iva < Decimal("5000000"):
+            pct = Decimal("0.025")     # 2.50%
+        else:
+            pct = Decimal("0.025")
+
+        return (valor_sin_iva * pct).quantize(Decimal("0.01"))
+
+    # ➤ Si viene 0 → seguro gratuito
+    if seguro_anual_entrada == 0:
+        return Decimal("0")
+
+    # ➤ Si viene valor positivo → usarlo
+    return Decimal(seguro_anual_entrada)
+
+def calcular_pago_mensual(
+    valor,
+    enganche,
+    tasa_anual,
+    plazo_meses,
+    valor_residual,
+    comision,
+    rentas_deposito,
+    seguro_anual: Decimal,
+    seguro_contado_flag: bool,
+    div_plan: Decimal,
+    gestoria: Decimal,
+):
+    # Valor sin IVA del activo
+    valor_sin_iva = Decimal(valor) / Decimal("1.16")
+
+    # Interés y plazos
     r = Decimal(tasa_anual) / Decimal(100 * 12)
     n = Decimal(plazo_meses)
-    fv = Decimal(valor / 1.16 * valor_residual / 100)
 
+    # Valor presente del financiamiento del activo
+    pv = valor_sin_iva * Decimal(1 - enganche / 100)
+    fv = valor_sin_iva * Decimal(valor_residual / 100)
+
+    # Pago de renta (solo activo, sin seguro, sin gestoria)
     if r == 0:
         pago = -(pv - fv) / n
     else:
         pago = ((pv - fv * ((1 + r) ** (-n))) * r) / (1 - (1 + r) ** (-n))
 
-    monto_comision = (Decimal(comision) / Decimal(100)) * pv
-    monto_enganche = (Decimal(enganche) / Decimal(100)) * (Decimal(valor) / Decimal("1.16"))
-    monto_deposito = Decimal(rentas_deposito) * pago * Decimal("1.16")
-    monto_residual = (Decimal(valor) / Decimal("1.16")) * (Decimal(valor_residual) / Decimal(100))
+    # -----------------------------
+    # SEGURO
+    # -----------------------------
+    pv_seguro = seguro_anual  # ya viene sin IVA
 
-    subtotal_inicial = monto_enganche + monto_comision + monto_deposito + pago
-    iva_inicial = (monto_enganche + monto_comision + pago) * Decimal("0.16")
+    if seguro_contado_flag and pv_seguro > 0:
+        # Seguro pagado de contado
+        pago_seguro = Decimal("0")
+        monto_seguro_contado = pv_seguro
+    else:
+        # Seguro financiado a 12 meses
+        n_seg = Decimal(12)
+        if pv_seguro == 0:
+            pago_seguro = Decimal("0")
+        else:
+            if r == 0:
+                pago_seguro = -pv_seguro / n_seg
+            else:
+                pago_seguro = ((pv_seguro - Decimal(0) * ((1 + r) ** (-n_seg))) * r) / (
+                    1 - (1 + r) ** (-n_seg)
+                )
+        monto_seguro_contado = Decimal("0")
+
+    # -----------------------------
+    # GESTORÍA FINANCIADA (solo 12 meses)
+    # -----------------------------
+    pv_gestoria = gestoria
+    if pv_gestoria > 0:
+        n_gest = Decimal(12)
+        if r == 0:
+            pago_gestoria = -pv_gestoria / n_gest
+        else:
+            pago_gestoria = (
+                (pv_gestoria - Decimal(0) * ((1 + r) ** (-n_gest))) * r
+            ) / (1 - (1 + r) ** (-n_gest))
+    else:
+        pago_gestoria = Decimal("0")
+
+    # -----------------------------
+    # CARGOS INICIALES
+    # -----------------------------
+    monto_comision = (Decimal(comision) / Decimal(100)) * pv
+    monto_enganche = (Decimal(enganche) / Decimal(100)) * valor_sin_iva
+
+    # Subtotal mensual (sin gestoría): renta + seguro financiado
+    subtotal_mensual = pago + pago_seguro
+
+    # Renta en depósito (sobre la renta total con seguro, sin gestoría)
+    total_mensual_sin_gestoria_con_iva = subtotal_mensual * Decimal("1.16")
+    monto_deposito = Decimal(rentas_deposito) * total_mensual_sin_gestoria_con_iva
+
+    # Primera mensualidad (incluye gestoría + renta + seguro)
+    primera_mensualidad = subtotal_mensual + pago_gestoria
+
+    # Subtotal inicial = enganche + comisión + depósito + 1a mensualidad + seguro contado
+    subtotal_inicial = (
+        monto_enganche
+        + monto_comision
+        + monto_deposito
+        + primera_mensualidad
+        + monto_seguro_contado
+    )
+
+    # IVA inicial (sobre enganche + comisión + primera mensualidad + seguro contado)
+    iva_inicial = (
+        monto_enganche
+        + monto_comision
+        + primera_mensualidad
+        + monto_seguro_contado
+    ) * Decimal("0.16")
+
     total_inicial = subtotal_inicial + iva_inicial
 
-    iva_renta = pago * Decimal("0.16")
-    total_renta = pago * Decimal("1.16")
+    # -----------------------------
+    # PLAN vs RENTA
+    # -----------------------------
+    div = div_plan / Decimal(100)  # 0.48
 
+    renta_plan = subtotal_mensual * div
+    renta_mensual = subtotal_mensual * (Decimal("1") - div)
+
+    subtotal_mensual_out = renta_plan + renta_mensual  # es igual a subtotal_mensual
+    iva_mensual = subtotal_mensual_out * Decimal("0.16")
+    total_mensual = subtotal_mensual_out * Decimal("1.16")
+
+    # -----------------------------
+    # RESIDUAL Y TOTALES FINALES
+    # -----------------------------
+    monto_residual = valor_sin_iva * Decimal(valor_residual / 100)
     iva_residual = monto_residual * Decimal("0.16")
     total_residual = monto_residual * Decimal("1.16")
 
@@ -114,14 +256,20 @@ def calcular_pago_mensual(valor, enganche, tasa_anual, plazo_meses, valor_residu
     return {
         "Enganche": float(round(monto_enganche, 2)),
         "Comision": float(round(monto_comision, 2)),
+        "Seguro_Contado": float(round(monto_seguro_contado, 2)),
         "Renta_en_Deposito": float(round(monto_deposito, 2)),
-        "Primera_Mensualidad": float(round(pago, 2)),
+        "Primera_Mensualidad": float(round(primera_mensualidad, 2)),
         "Subtotal_Pago_Inicial": float(round(subtotal_inicial, 2)),
         "IVA_Pago_Inicial": float(round(iva_inicial, 2)),
         "Total_Inicial": float(round(total_inicial, 2)),
-        "Renta_Mensual": float(round(pago, 2)),
-        "IVA_Renta_Mensual": float(round(iva_renta, 2)),
-        "Total_Renta_Mensual": float(round(total_renta, 2)),
+
+        # 🔹 Nuevas / modificadas
+        "Renta_Plan": float(round(renta_plan, 2)),
+        "Renta_Mensual": float(round(renta_mensual, 2)),
+        "Subtotal_Mensual": float(round(subtotal_mensual_out, 2)),
+        "IVA_Mensual": float(round(iva_mensual, 2)),
+        "Total_Mensual": float(round(total_mensual, 2)),
+
         "Residual": float(round(monto_residual, 2)),
         "IVA_Residual": float(round(iva_residual, 2)),
         "Total_Residual": float(round(total_residual, 2)),
@@ -173,21 +321,30 @@ def convertir_pdf(word_path: str, output_dir: str):
 # -------------------------------------------------
 @app.post("/cotizar")
 def cotizar(data: CotizacionRequest, request: Request):
+        # 🔹 Nombre y activo siempre en MAYÚSCULAS
+    nombre_upper = data.nombre.upper()
+    activo_upper = data.nombre_activo.upper()
     escenarios = [
         {"plazo": 24, "residual": 40},
         {"plazo": 36, "residual": 30},
         {"plazo": 48, "residual": 25},
     ]
+     # 🔹 Seguro anual (sin IVA) a usar en todos los escenarios
+    seguro_anual_decimal = calcular_seguro_anual(
+        valor_con_iva=data.valor,
+        seguro_anual_entrada=data.seguro_anual,
+    )
+
+    seguro_contado_flag = bool(data.seguro_contado)
 
     # Este dict se va a mandar a la plantilla Word
     valores_para_doc = {
-        "nombre": data.nombre,
-        "descripcion": data.nombre_activo,
+        "nombre": nombre_upper,
+        "descripcion": activo_upper,
         "precio": formato_miles(data.valor),
         "fecha": datetime.now().strftime("%d/%m/%Y"),
         "folio": datetime.now().strftime("%Y%m%d%H%M%S"),
     }
-
     detalle_resultado = []
 
     # Como ahora solo hay UN activo, usamos directamente data.*
@@ -200,8 +357,11 @@ def cotizar(data: CotizacionRequest, request: Request):
             valor_residual=e["residual"],
             comision=data.comision,
             rentas_deposito=data.rentas_deposito,
+            seguro_anual=seguro_anual_decimal,
+            seguro_contado_flag=seguro_contado_flag,
+            div_plan=DIV_PLAN,
+            gestoria=GESTORIA,
         )
-
         # Guardamos info para la respuesta JSON
         detalle_resultado.append({
             "Plazo": e["plazo"],
@@ -223,8 +383,8 @@ def cotizar(data: CotizacionRequest, request: Request):
 
                 # Mensualidad
                 "mensualidad24": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes24": formato_miles(calculos["IVA_Renta_Mensual"]),
-                "totalmes24": formato_miles(calculos["Total_Renta_Mensual"]),
+                "IVAmes24": formato_miles(calculos["IVA_Mensual"]),
+                "totalmes24": formato_miles(calculos["Total_Mensual"]),
 
                 # Residual
                 "residual24": formato_miles(calculos["Residual"]),
@@ -246,8 +406,8 @@ def cotizar(data: CotizacionRequest, request: Request):
                 "totalinicial36": formato_miles(calculos["Total_Inicial"]),
 
                 "mensualidad36": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes36": formato_miles(calculos["IVA_Renta_Mensual"]),
-                "totalmes36": formato_miles(calculos["Total_Renta_Mensual"]),
+                "IVAmes36": formato_miles(calculos["IVA_Mensual"]),
+                "totalmes36": formato_miles(calculos["Total_Mensual"]),
 
                 "residual36": formato_miles(calculos["Residual"]),
                 "IVAresidual36": formato_miles(calculos["IVA_Residual"]),
@@ -267,8 +427,8 @@ def cotizar(data: CotizacionRequest, request: Request):
                 "totalinicial48": formato_miles(calculos["Total_Inicial"]),
 
                 "mensualidad48": formato_miles(calculos["Renta_Mensual"]),
-                "IVAmes48": formato_miles(calculos["IVA_Renta_Mensual"]),
-                "totalmes48": formato_miles(calculos["Total_Renta_Mensual"]),
+                "IVAmes48": formato_miles(calculos["IVA_Mensual"]),
+                "totalmes48": formato_miles(calculos["Total_Mensual"]),
 
                 "residual48": formato_miles(calculos["Residual"]),
                 "IVAresidual48": formato_miles(calculos["IVA_Residual"]),
