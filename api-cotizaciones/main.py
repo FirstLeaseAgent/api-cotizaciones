@@ -94,7 +94,7 @@ class CotizacionRequest(BaseModel):
     rentas_deposito: Optional[float] = 1.0
 
     seguro_anual: Optional[float] = None      # None o -1 = se calcula
-    seguro_contado: Optional[bool] = None     # True = contado / False = financiado
+    seguro_contado: bool = False     # True = contado / False = financiado
 
 
 # -------------------------------------------------
@@ -303,7 +303,7 @@ def cotizar(data: CotizacionRequest, request: Request):
     ]
 
     seguro_anual = calcular_seguro_anual(data.valor, data.seguro_anual)
-    seguro_contado_flag = True if data.seguro_contado is True else False
+    seguro_contado_flag = data.seguro_contado
 
     valores_para_doc = {
         "nombre": nombre_upper,
