@@ -294,7 +294,7 @@ def cotizar(data: CotizacionRequest, request: Request):
     activo_upper = data.nombre_activo.upper()
 
     # Folio único consistente para JSON + Word + PDF
-    folio = datetime.now(TIMEZONE).strftime("%Y%m%d_%H%M%S")
+    folio = datetime.now(TIMEZONE).strftime("%Y%m%d%H%M%S")
 
     escenarios = [
         {"plazo": 24, "residual": 40},
@@ -303,7 +303,7 @@ def cotizar(data: CotizacionRequest, request: Request):
     ]
 
     seguro_anual = calcular_seguro_anual(data.valor, data.seguro_anual)
-    seguro_contado_flag = bool(data.seguro_contado)
+    seguro_contado_flag = True if data.seguro_contado is True else False
 
     valores_para_doc = {
         "nombre": nombre_upper,
