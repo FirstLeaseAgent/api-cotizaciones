@@ -249,11 +249,12 @@ def calcular_pago_mensual(
 
 
 # -------------------------------------------------
-# FORMATO MILES
+# FORMATO MILES SIN DECIMALES
 # -------------------------------------------------
 def formato_miles(v):
     try:
-        return f"{float(v):,.2f}"
+        num = int(round(float(v)))
+        return f"{num:,}"
     except:
         return v
 
