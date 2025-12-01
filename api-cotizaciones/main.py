@@ -89,9 +89,9 @@ class CotizacionRequest(BaseModel):
     nombre_activo: str
     valor: float
     enganche: Optional[float] = 10.0
-    tasa_anual: Optional[float] = 30.0
+    tasa_anual: Optional[float] = 27.0
     comision: Optional[float] = 3.0
-    rentas_deposito: Optional[float] = 1.0
+    rentas_deposito: Optional[float] = 0.0
 
     seguro_anual: Optional[float] = None      # None o -1 = se calcula
     seguro_contado: bool = False     # True = contado / False = financiado
@@ -300,6 +300,7 @@ def cotizar(data: CotizacionRequest, request: Request):
         {"plazo": 24, "residual": 40},
         {"plazo": 36, "residual": 30},
         {"plazo": 48, "residual": 25},
+        {"plazo": 60, "residual": 20},
     ]
 
     seguro_anual = calcular_seguro_anual(data.valor, data.seguro_anual)
