@@ -93,7 +93,7 @@ class CotizacionRequest(BaseModel):
     comision: Optional[float] = 3.0
     rentas_deposito: Optional[float] = 0.0
 
-    seguro_anual: Optional[float] = None      # None o -1 = se calcula
+    seguro_anual: Optional[float] = -1     # None o -1 = se calcula
     seguro_contado: bool = False     # True = contado / False = financiado
 
 
