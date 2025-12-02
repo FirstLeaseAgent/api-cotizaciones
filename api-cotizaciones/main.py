@@ -502,3 +502,10 @@ def list_templates():
 @app.get("/")
 def root():
     return {"mensaje": "API funcionando correctamente 🚀"}
+
+# -------------------------------------------------
+# HEALTH CHECK PARA RENDER
+# -------------------------------------------------
+@app.get("/")
+def health_check():
+    return {"status": "ok"}
