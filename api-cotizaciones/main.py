@@ -101,32 +101,42 @@ class CotizacionRequest(BaseModel):
 # SEGURO ANUAL
 # -------------------------------------------------
 def calcular_seguro_anual(valor_con_iva: float, entrada: Optional[float]) -> Decimal:
+    """
+    Calcula el seguro anual SIN IVA.
 
-    # Se fuerza cálculo por tabla
+    - Si entrada es None o -1 → usa tabla con VALOR CON IVA.
+    - Si entrada es 0 → seguro gratuito.
+    - Si entrada > 0 → se usa el valor proporcionado (ya sin IVA).
+    """
+
+    # Caso: usar tabla
     if entrada is None or entrada == -1:
-        valor_sin_iva = Decimal(valor_con_iva) / Decimal("1.16")
+        v_con_iva = Decimal(str(valor_con_iva))
+        valor_sin_iva = v_con_iva / Decimal("1.16")
 
-        if valor_sin_iva < 500000:
+        # Rangos basados EN VALOR CON IVA
+        if v_con_iva <= Decimal("500000"):
             pct = Decimal("0.04")
-        elif valor_sin_iva < 750000:
+        elif v_con_iva <= Decimal("750000"):
             pct = Decimal("0.035")
-        elif valor_sin_iva < 1_000_000:
+        elif v_con_iva <= Decimal("1000000"):
             pct = Decimal("0.03")
-        elif valor_sin_iva < 1_500_000:
+        elif v_con_iva <= Decimal("1500000"):
             pct = Decimal("0.0275")
-        elif valor_sin_iva < 5_000_000:
+        elif v_con_iva <= Decimal("5000000"):
             pct = Decimal("0.025")
         else:
             pct = Decimal("0.025")
 
+        # El seguro siempre se calcula sobre el valor SIN IVA
         return (valor_sin_iva * pct).quantize(Decimal("0.01"))
 
-    # Seguro gratuito
+    # Caso: seguro gratuito
     if entrada == 0:
         return Decimal("0")
 
-    # Valor proporcionado
-    return Decimal(entrada)
+    # Caso: monto proporcionado (ya sin IVA)
+    return Decimal(str(entrada))
 
 
 # -------------------------------------------------
