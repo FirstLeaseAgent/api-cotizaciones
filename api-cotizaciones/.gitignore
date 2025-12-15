@@ -1,9 +1,33 @@
+# -----------------------------
 # Cache de Python
+# -----------------------------
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# Entorno virtual
+# -----------------------------
+# Entorno virtual (local)
+# -----------------------------
 .venv/
+venv/
 
+# -----------------------------
 # Variables de entorno
+# -----------------------------
 .env
+.env.*
+
+# -----------------------------
+# Base de datos local (NO subir a producción)
+# -----------------------------
+db.json
+
+# -----------------------------
+# Archivos generados por la API
+# -----------------------------
+templates/*
+outputs/*
+
+# Si quieres permitir las plantillas originales:
+!templates/Plantilla_Cotizacion.docx
