@@ -14,6 +14,7 @@ import uuid
 import requests
 import subprocess
 from utils.parser import extraer_variables
+from dotenv import load_dotenv
 
 # -------------------------------------------------
 # CONFIGURACIÓN GENERAL
@@ -33,8 +34,13 @@ TIMEZONE = ZoneInfo("America/Mexico_City")
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+load_dotenv()
 # API KEY para actualizar variables
-API_ADMIN_KEY = os.getenv("API_ADMIN_KEY", "changeme")  # CAMBIA ESTO EN PRODUCCIÓN
+API_ADMIN_KEY = os.getenv("API_ADMIN_KEY")
+if not API_ADMIN_KEY:
+    raise RuntimeError(
+        "❌ ERROR: Debes definir la variable de entorno API_ADMIN_KEY (en .env o en el entorno del servidor)."
+    )
 
 # -------------------------------------------------
 # VARIABLES / PARÁMETROS DE NEGOCIO (por defecto)
@@ -538,7 +544,7 @@ def cotizar(data: CotizacionRequest, request: Request):
         "descripcion": activo_upper,
         "precio": formato_miles(data.valor),
         "accesorios": formato_miles(accesorios),
-        "precio_total": formato_miles(data.valor + accesorios),
+        "ptotal": formato_miles(data.valor + accesorios),
         "fecha": datetime.now(TIMEZONE).strftime("%d/%m/%Y"),
         "folio": folio,
     }
@@ -793,6 +799,8 @@ def update_variables(payload: VariablesUpdate, x_api_key: str = Header(None)):
         f.seek(0)
         f.truncate()
         json.dump(data, f, indent=4)
+
+    refresh_cotizar_example()
 
     return {"status": "ok", "variables": VARIABLES}
 
