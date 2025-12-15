@@ -538,6 +538,7 @@ def cotizar(data: CotizacionRequest, request: Request):
         "descripcion": activo_upper,
         "precio": formato_miles(data.valor),
         "accesorios": formato_miles(accesorios),
+        "precio_total": formato_miles(data.valor + accesorios),
         "fecha": datetime.now(TIMEZONE).strftime("%d/%m/%Y"),
         "folio": folio,
     }
