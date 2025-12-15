@@ -62,7 +62,7 @@
         "rentas_deposito_default": 0.0,
         "comision_default": 3.0,
         "div_plan": 48.0,
-        "gestoria": 2000.0,
+        "gestoria": 2320.0,
         "residuales_default": [
             {
                 "plazo": 24,
