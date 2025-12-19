@@ -621,7 +621,19 @@ def cotizar(data: CotizacionRequest, request: Request):
         "Activo": activo_upper,
         "Valor": round(data.valor, 2),
         "Detalle": detalle,
-        "documentos": word_info
+        "documentos": word_info,
+        "parametros": {
+            "accesorios": accesorios,
+            "comision": comision,
+            "enganche": enganche,
+            "localizador_anual": loc_anual,
+            "localizador_inicial": loc_ini,
+            "rentas_deposito": rentas_deposito,
+            "residuales": escenarios,   # ← Los plazos+residual realmente utilizados
+            "seguro_anual": float(seguro_anual),
+            "seguro_contado": seguro_contado_flag,
+            "tasa_anual": tasa_anual,
+        }
     }
 
 
