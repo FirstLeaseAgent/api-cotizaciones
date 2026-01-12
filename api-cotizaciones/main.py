@@ -1,6 +1,13 @@
 import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+
+import re
+import unicodedata
+from typing import Any, Dict
+import psycopg2
+from psycopg2.extras import execute_values, Json
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -15,6 +22,7 @@ import requests
 import subprocess
 from utils.parser import extraer_variables
 from dotenv import load_dotenv
+
 
 # -------------------------------------------------
 # CONFIGURACIÓN GENERAL
@@ -41,6 +49,12 @@ if not API_ADMIN_KEY:
     raise RuntimeError(
         "❌ ERROR: Debes definir la variable de entorno API_ADMIN_KEY (en .env o en el entorno del servidor)."
     )
+
+# -------------------------------------------------
+# SYNC CARTERA (Postgres en Render)
+# -------------------------------------------------
+CARTERA_DATABASE_URL = os.getenv("CARTERA_DATABASE_URL")
+CARTERA_SYNC_API_KEY = os.getenv("CARTERA_SYNC_API_KEY")
 
 # -------------------------------------------------
 # VARIABLES / PARÁMETROS DE NEGOCIO (por defecto)
@@ -816,6 +830,204 @@ def update_variables(payload: VariablesUpdate, x_api_key: str = Header(None)):
 
     return {"status": "ok", "variables": VARIABLES}
 
+
+# -------------------------------------------------
+# /sync/historico  (Power Automate -> Postgres)
+# -------------------------------------------------
+
+_num_re = re.compile(r"[^0-9\.\-]")
+
+def _norm_key(k: str) -> str:
+    """
+    Normaliza keys para que NO dependamos de acentos, puntos o dobles espacios.
+    Ej:
+      'NO. CONTRATO' -> 'NO CONTRATO'
+      'NÚMERO DE SERIE' -> 'NUMERO DE SERIE'
+    """
+    if k is None:
+        return ""
+    s = str(k).strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))  # quita acentos
+    s = s.replace(".", " ").replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip().upper()
+    return s
+
+def _get_any(row: Dict[str, Any], *names: str) -> Any:
+    """
+    Busca un campo por varios nombres posibles, usando normalización.
+    """
+    if not row:
+        return None
+    norm_map = {_norm_key(k): v for k, v in row.items()}
+    for n in names:
+        v = norm_map.get(_norm_key(n))
+        if v is not None and str(v).strip() != "":
+            return v
+    return None
+
+def _to_number(v: Any):
+    if v is None:
+        return None
+    s = str(v).strip()
+    if s == "":
+        return None
+    s = _num_re.sub("", s)  # quita $, comas, espacios, etc.
+    if s in ("", ".", "-", "-.", ".-"):
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def _to_int(v: Any):
+    n = _to_number(v)
+    if n is None:
+        return None
+    try:
+        return int(round(n))
+    except Exception:
+        return None
+
+def _to_date_str(v: Any):
+    # Power Automate a veces manda ISO. Psycopg2 acepta 'YYYY-MM-DD' bien.
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+class SyncTables(BaseModel):
+    cartera: List[Dict[str, Any]] = []
+    activos: List[Dict[str, Any]] = []
+
+class SyncPayload(BaseModel):
+    tables: SyncTables
+
+def _get_cartera_conn():
+    if not CARTERA_DATABASE_URL:
+        raise HTTPException(status_code=500, detail="Missing CARTERA_DATABASE_URL")
+    return psycopg2.connect(CARTERA_DATABASE_URL)
+
+@app.post("/sync/historico")
+def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)):
+    # Seguridad: clave independiente a API_ADMIN_KEY
+    if not CARTERA_SYNC_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing CARTERA_SYNC_API_KEY")
+    if x_api_key != CARTERA_SYNC_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    cartera_rows = payload.tables.cartera or []
+    activos_rows = payload.tables.activos or []
+
+    # -------- UPSERT: cartera_historica --------
+    cartera_values = []
+    for r in cartera_rows:
+        contrato = _get_any(r, "NO. CONTRATO", "NO CONTRATO", "NO_CONTRATO")
+        if not contrato:
+            continue
+        contrato = str(contrato).strip()
+
+        cartera_values.append((
+            contrato,
+            (_get_any(r, "CLIENTE") or None),
+            (_get_any(r, "TIPO DE ACTIVO") or None),
+            _to_int(_get_any(r, "PLAZO DEL ARRENDAMIENTO")),
+            _to_date_str(_get_any(r, "FECHA DE INICIO")),
+            _to_date_str(_get_any(r, "FECHA DE VENCIMIENTO")),
+            _to_number(_get_any(r, "TASA DE INTERES", "TASA DE INTERÉS")),
+            _to_number(_get_any(r, "SALDO INSOLUTO INICIO MES")),
+            _to_number(_get_any(r, "PAGOS HISTORICOS C/IVA", "PAGOS HISTÓRICOS C/IVA")),
+            Json(r),
+        ))
+
+    # -------- UPSERT: activos_historico --------
+    activos_values = []
+    for r in activos_rows:
+        ident = _get_any(r, "IDENTIFICADOR")
+        contrato = _get_any(r, "NO. CONTRATO", "NO CONTRATO", "NO_CONTRATO")
+        if not ident or not contrato:
+            continue
+        ident = str(ident).strip()
+        contrato = str(contrato).strip()
+
+        activos_values.append((
+            ident,
+            contrato,
+            (_get_any(r, "CONTRATO INTERNO") or None),
+            (_get_any(r, "CLIENTE") or None),
+            (_get_any(r, "TIPO DE ACTIVO") or None),
+            (_get_any(r, "DESCRIPCION", "DESCRIPCIÓN") or None),
+            (_get_any(r, "NÚMERO DE SERIE", "NUMERO DE SERIE") or None),
+            (_get_any(r, "NÚMERO DE MOTOR", "NUMERO DE MOTOR") or None),
+            (_to_date_str(_get_any(r, "FECHA DE INICIO"))),
+            (_to_date_str(_get_any(r, "FECHA DE VENCIMIENTO"))),
+            (_get_any(r, "ASEGURADORA") or None),
+            (_get_any(r, "POLIZA", "PÓLIZA") or None),
+            (_to_date_str(_get_any(r, "INICIO VIGENCIA POLIZA", "INICIO VIGENCIA PÓLIZA"))),
+            (_to_date_str(_get_any(r, "FIN VIGENCIA POLIZA", "FIN VIGENCIA PÓLIZA"))),
+            Json(r),
+        ))
+
+    conn = _get_cartera_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                if cartera_values:
+                    execute_values(cur, """
+                        insert into public.cartera_historica
+                          (no_contrato, cliente, tipo_de_activo, plazo_del_arrendamiento,
+                           fecha_de_inicio, fecha_de_vencimiento,
+                           tasa_de_interes, saldo_insoluto_inicio_mes, pagos_historicos_c_iva,
+                           raw, updated_at)
+                        values %s
+                        on conflict (no_contrato) do update set
+                          cliente = excluded.cliente,
+                          tipo_de_activo = excluded.tipo_de_activo,
+                          plazo_del_arrendamiento = excluded.plazo_del_arrendamiento,
+                          fecha_de_inicio = excluded.fecha_de_inicio,
+                          fecha_de_vencimiento = excluded.fecha_de_vencimiento,
+                          tasa_de_interes = excluded.tasa_de_interes,
+                          saldo_insoluto_inicio_mes = excluded.saldo_insoluto_inicio_mes,
+                          pagos_historicos_c_iva = excluded.pagos_historicos_c_iva,
+                          raw = excluded.raw,
+                          updated_at = now();
+                    """, cartera_values)
+
+                if activos_values:
+                    execute_values(cur, """
+                        insert into public.activos_historico
+                          (identificador, no_contrato, contrato_interno, cliente, tipo_de_activo,
+                           descripcion, numero_de_serie, numero_de_motor,
+                           fecha_de_inicio, fecha_de_vencimiento,
+                           aseguradora, poliza, inicio_vigencia_poliza, fin_vigencia_poliza,
+                           raw, updated_at)
+                        values %s
+                        on conflict (identificador) do update set
+                          no_contrato = excluded.no_contrato,
+                          contrato_interno = excluded.contrato_interno,
+                          cliente = excluded.cliente,
+                          tipo_de_activo = excluded.tipo_de_activo,
+                          descripcion = excluded.descripcion,
+                          numero_de_serie = excluded.numero_de_serie,
+                          numero_de_motor = excluded.numero_de_motor,
+                          fecha_de_inicio = excluded.fecha_de_inicio,
+                          fecha_de_vencimiento = excluded.fecha_de_vencimiento,
+                          aseguradora = excluded.aseguradora,
+                          poliza = excluded.poliza,
+                          inicio_vigencia_poliza = excluded.inicio_vigencia_poliza,
+                          fin_vigencia_poliza = excluded.fin_vigencia_poliza,
+                          raw = excluded.raw,
+                          updated_at = now();
+                    """, activos_values)
+
+        return {
+            "cartera_received": len(cartera_rows),
+            "cartera_upserted": len(cartera_values),
+            "activos_received": len(activos_rows),
+            "activos_upserted": len(activos_values),
+        }
+    finally:
+        conn.close()
 # -------------------------------------------------
 # HEALTH CHECK
 # -------------------------------------------------
