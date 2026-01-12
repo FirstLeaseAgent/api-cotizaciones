@@ -23,6 +23,9 @@ import subprocess
 from utils.parser import extraer_variables
 from dotenv import load_dotenv
 
+from datetime import datetime, timedelta
+
+
 
 # -------------------------------------------------
 # CONFIGURACIÓN GENERAL
@@ -837,18 +840,29 @@ def update_variables(payload: VariablesUpdate, x_api_key: str = Header(None)):
 
 _num_re = re.compile(r"[^0-9\.\-]")
 
+_xcode_re = re.compile(r"_x([0-9A-Fa-f]{4})_", re.IGNORECASE)
+
+def _decode_xcodes(s: str) -> str:
+    # Convierte _x002e_ -> '.'  y _x0020_ -> ' '
+    return _xcode_re.sub(lambda m: chr(int(m.group(1), 16)), s)
+
 def _norm_key(k: str) -> str:
     """
-    Normaliza keys para que NO dependamos de acentos, puntos o dobles espacios.
-    Ej:
-      'NO. CONTRATO' -> 'NO CONTRATO'
-      'NÚMERO DE SERIE' -> 'NUMERO DE SERIE'
+    Normaliza keys provenientes de Excel / Power Automate:
+    - Decodifica _xNNNN_ (ej. _x002e_)
+    - Quita acentos
+    - Unifica separadores
     """
     if k is None:
         return ""
     s = str(k).strip()
+
+    # 🔹 PASO CLAVE: decodificar formato Excel
+    s = _decode_xcodes(s)
+
+    # normalización estándar
     s = unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not unicodedata.combining(ch))  # quita acentos
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = s.replace(".", " ").replace("_", " ")
     s = re.sub(r"\s+", " ", s).strip().upper()
     return s
@@ -889,12 +903,28 @@ def _to_int(v: Any):
     except Exception:
         return None
 
+def _excel_serial_to_date(serial: float):
+    # Excel: día 1 = 1899-12-31 (con bug 1900), estándar práctico: base 1899-12-30
+    base = datetime(1899, 12, 30)
+    return (base + timedelta(days=serial)).date()
+
 def _to_date_str(v: Any):
-    # Power Automate a veces manda ISO. Psycopg2 acepta 'YYYY-MM-DD' bien.
     if v is None:
         return None
     s = str(v).strip()
-    return s or None
+    if s == "":
+        return None
+
+    # Si viene número de Excel (ej. 43467)
+    try:
+        n = float(s)
+        if n > 20000:  # umbral razonable para fechas modernas
+            return _excel_serial_to_date(n).isoformat()
+    except Exception:
+        pass
+
+    # Si viene ISO o texto, lo devolvemos tal cual
+    return s
 
 class SyncTables(BaseModel):
     cartera: List[Dict[str, Any]] = []
