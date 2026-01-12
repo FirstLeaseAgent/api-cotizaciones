@@ -1058,6 +1058,319 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
         }
     finally:
         conn.close()
+
+# ==============================
+# Cartera Query (READ ONLY)
+# ==============================
+CARTERA_READ_API_KEY = os.getenv("CARTERA_READ_API_KEY")
+
+def _require_read_key(x_api_key: Optional[str]):
+    if not CARTERA_READ_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing CARTERA_READ_API_KEY")
+    if x_api_key != CARTERA_READ_API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+def _clamp_limit(n: Optional[int], default: int = 200, max_n: int = 2000) -> int:
+    if n is None:
+        return default
+    try:
+        n = int(n)
+    except Exception:
+        return default
+    return max(1, min(max_n, n))
+
+def _rows_to_dicts(cur):
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+class QueryInclude(BaseModel):
+    contratos: bool = False
+    activos: bool = False
+
+class CarteraQuery(BaseModel):
+    scope: str = "cliente"  # cliente | contrato | cartera | activo
+    q: Optional[str] = None
+    no_contrato: Optional[str] = None
+    metrics: List[str] = []
+    include: QueryInclude = QueryInclude()
+    limit: Optional[int] = 200
+
+@app.post("/cartera/query")
+def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)):
+    _require_read_key(x_api_key)
+
+    scope = (payload.scope or "cliente").strip().lower()
+    q = (payload.q or "").strip()
+    no_contrato = (payload.no_contrato or "").strip()
+    limit = _clamp_limit(payload.limit)
+
+    # Filtros base
+    where_cartera = "1=1"
+    params_cartera = []
+
+    if scope == "cliente":
+        if not q:
+            raise HTTPException(status_code=400, detail="scope=cliente requires q (cliente)")
+        where_cartera = "c.cliente ilike %s"
+        params_cartera = [f"%{q}%"]
+
+    elif scope == "contrato":
+        if not no_contrato:
+            # permitimos que venga en q también
+            no_contrato = q
+        if not no_contrato:
+            raise HTTPException(status_code=400, detail="scope=contrato requires no_contrato (or q)")
+        where_cartera = "c.no_contrato = %s"
+        params_cartera = [no_contrato]
+
+    elif scope == "cartera":
+        where_cartera = "1=1"
+        params_cartera = []
+
+    elif scope == "activo":
+        # Para "activo" vamos a consultar principalmente activos_historico,
+        # pero métricas de cartera pueden venir por contrato o cliente si mandan no_contrato o q.
+        where_cartera = "1=1"
+        params_cartera = []
+    else:
+        raise HTTPException(status_code=400, detail="Invalid scope")
+
+    # Helpers SQL para extraer numericos desde raw (tolerante a comas/$)
+    raw_num = lambda key: f"""nullif(regexp_replace(coalesce(c.raw->>'{key}',''), '[^0-9\\.\\-]', '', 'g'),'')::numeric"""
+    raw_int = lambda key: f"""nullif(regexp_replace(coalesce(c.raw->>'{key}',''), '[^0-9\\-]', '', 'g'),'')::int"""
+
+    metrics_out = {}
+    conn = _get_cartera_conn()
+    try:
+        with conn, conn.cursor() as cur:
+
+            # ---------- MÉTRICAS ----------
+            for m in payload.metrics:
+                m = (m or "").strip().lower()
+
+                if m == "conteo_contratos":
+                    cur.execute(f"select count(*) as conteo_contratos from public.cartera_historica c where {where_cartera};", params_cartera)
+                    metrics_out["conteo_contratos"] = int(cur.fetchone()[0] or 0)
+
+                elif m == "vigentes_terminados":
+                    cur.execute(f"""
+                        select
+                          count(*) filter (where coalesce(c.saldo_insoluto_inicio_mes,0) > 0) as vigentes,
+                          count(*) filter (where coalesce(c.saldo_insoluto_inicio_mes,0) = 0) as terminados
+                        from public.cartera_historica c
+                        where {where_cartera};
+                    """, params_cartera)
+                    r = cur.fetchone()
+                    metrics_out["vigentes_terminados"] = {"vigentes": int(r[0] or 0), "terminados": int(r[1] or 0)}
+
+                elif m == "suma_rentas_vigentes":
+                    # Flujo mensual (S/IVA) *solo vigentes* (saldo insoluto > 0)
+                    cur.execute(f"""
+                        select coalesce(sum({raw_num('FLUJO MENSUAL S/IVA')}),0) as suma_rentas_vigentes
+                        from public.cartera_historica c
+                        where {where_cartera}
+                          and coalesce(c.saldo_insoluto_inicio_mes,0) > 0;
+                    """, params_cartera)
+                    metrics_out["suma_rentas_vigentes"] = float(cur.fetchone()[0] or 0)
+
+                elif m == "suma_cartera":
+                    # Cartera = suma de FLUJOS FUTUROS INICIO MES (según tu regla)
+                    cur.execute(f"""
+                        select coalesce(sum({raw_num('FLUJOS FUTUROS INICIO MES')}),0) as suma_cartera
+                        from public.cartera_historica c
+                        where {where_cartera};
+                    """, params_cartera)
+                    metrics_out["suma_cartera"] = float(cur.fetchone()[0] or 0)
+
+                elif m == "suma_pagos":
+                    cur.execute(f"""
+                        select coalesce(sum(coalesce(c.pagos_historicos_c_iva,0)),0) as suma_pagos
+                        from public.cartera_historica c
+                        where {where_cartera};
+                    """, params_cartera)
+                    metrics_out["suma_pagos"] = float(cur.fetchone()[0] or 0)
+
+                elif m == "saldo_insoluto":
+                    cur.execute(f"""
+                        select coalesce(sum(coalesce(c.saldo_insoluto_inicio_mes,0)),0) as saldo_insoluto
+                        from public.cartera_historica c
+                        where {where_cartera};
+                    """, params_cartera)
+                    metrics_out["saldo_insoluto"] = float(cur.fetchone()[0] or 0)
+
+                elif m == "rentas_por_devengar":
+                    # Si es contrato, devolvemos el valor del contrato; si es cliente/cartera, suma
+                    if scope == "contrato":
+                        cur.execute(f"""
+                            select c.no_contrato,
+                                   {raw_int('NO. DE RENTAS POR DEVENGAR')} as rentas_por_devengar
+                            from public.cartera_historica c
+                            where {where_cartera}
+                            limit 1;
+                        """, params_cartera)
+                        row = cur.fetchone()
+                        metrics_out["rentas_por_devengar"] = (int(row[1]) if row and row[1] is not None else None)
+                    else:
+                        cur.execute(f"""
+                            select coalesce(sum(coalesce({raw_int('NO. DE RENTAS POR DEVENGAR')},0)),0) as rentas_por_devengar
+                            from public.cartera_historica c
+                            where {where_cartera};
+                        """, params_cartera)
+                        metrics_out["rentas_por_devengar"] = int(cur.fetchone()[0] or 0)
+
+                elif m == "monto_financiado":
+                    cur.execute(f"""
+                        select coalesce(sum({raw_num('MONTO A FINANCIAR S/IVA')}),0) as monto_financiado
+                        from public.cartera_historica c
+                        where {where_cartera};
+                    """, params_cartera)
+                    metrics_out["monto_financiado"] = float(cur.fetchone()[0] or 0)
+
+                elif m == "valor_residual":
+                    cur.execute(f"""
+                        select coalesce(sum({raw_num('VALOR RESIDUAL S/IVA')}),0) as valor_residual
+                        from public.cartera_historica c
+                        where {where_cartera};
+                    """, params_cartera)
+                    metrics_out["valor_residual"] = float(cur.fetchone()[0] or 0)
+
+                elif m == "condiciones":
+                    # Solo tiene sentido por contrato (regresamos un objeto)
+                    if scope != "contrato":
+                        metrics_out["condiciones"] = "scope=contrato required"
+                    else:
+                        cur.execute(f"""
+                            select
+                              c.no_contrato,
+                              c.plazo_del_arrendamiento,
+                              c.tasa_de_interes,
+                              {raw_num('APORTACION EXTRAORDINARIA S/IVA')} as aportacion_extraordinaria_s_iva,
+                              {raw_num('COMISION POR APERTURA S/IVA')} as comision_por_apertura_s_iva,
+                              {raw_num('DEPOSITO EN GARANTIA S/IVA')} as deposito_en_garantia_s_iva,
+                              {raw_num('MONTO A FINANCIAR S/IVA')} as monto_a_financiar_s_iva,
+                              {raw_num('VALOR FACTURA ACTIVO S/IVA')} as valor_factura_activo_s_iva,
+                              {raw_num('VALOR RESIDUAL S/IVA')} as valor_residual_s_iva
+                            from public.cartera_historica c
+                            where {where_cartera}
+                            limit 1;
+                        """, params_cartera)
+                        r = cur.fetchone()
+                        if not r:
+                            metrics_out["condiciones"] = None
+                        else:
+                            metrics_out["condiciones"] = {
+                                "no_contrato": r[0],
+                                "plazo": r[1],
+                                "tasa_interes": float(r[2]) if r[2] is not None else None,
+                                "aportacion_extraordinaria_s_iva": float(r[3]) if r[3] is not None else None,
+                                "comision_por_apertura_s_iva": float(r[4]) if r[4] is not None else None,
+                                "deposito_en_garantia_s_iva": float(r[5]) if r[5] is not None else None,
+                                "monto_a_financiar_s_iva": float(r[6]) if r[6] is not None else None,
+                                "valor_factura_activo_s_iva": float(r[7]) if r[7] is not None else None,
+                                "valor_residual_s_iva": float(r[8]) if r[8] is not None else None,
+                            }
+
+                elif m == "fechas":
+                    if scope == "contrato":
+                        cur.execute(f"""
+                            select c.no_contrato, c.fecha_de_inicio, c.fecha_de_vencimiento
+                            from public.cartera_historica c
+                            where {where_cartera}
+                            limit 1;
+                        """, params_cartera)
+                        r = cur.fetchone()
+                        metrics_out["fechas"] = {
+                            "no_contrato": r[0] if r else None,
+                            "fecha_inicio": (r[1].isoformat() if r and r[1] else None),
+                            "fecha_vencimiento": (r[2].isoformat() if r and r[2] else None),
+                        }
+                    else:
+                        cur.execute(f"""
+                            select min(c.fecha_de_inicio) as min_inicio,
+                                   max(c.fecha_de_inicio) as max_inicio,
+                                   min(c.fecha_de_vencimiento) as min_venc,
+                                   max(c.fecha_de_vencimiento) as max_venc
+                            from public.cartera_historica c
+                            where {where_cartera};
+                        """, params_cartera)
+                        r = cur.fetchone()
+                        metrics_out["fechas"] = {
+                            "min_inicio": r[0].isoformat() if r and r[0] else None,
+                            "max_inicio": r[1].isoformat() if r and r[1] else None,
+                            "min_vencimiento": r[2].isoformat() if r and r[2] else None,
+                            "max_vencimiento": r[3].isoformat() if r and r[3] else None,
+                        }
+
+                elif m == "desde_cuando_cliente":
+                    # min(fecha_inicio) por cliente (o filtro actual)
+                    cur.execute(f"""
+                        select min(c.fecha_de_inicio) as desde_cuando
+                        from public.cartera_historica c
+                        where {where_cartera};
+                    """, params_cartera)
+                    r = cur.fetchone()
+                    metrics_out["desde_cuando_cliente"] = (r[0].isoformat() if r and r[0] else None)
+
+                else:
+                    # ignoramos métricas desconocidas para no romper al agente
+                    metrics_out[m] = "unknown_metric"
+
+            # ---------- LISTADOS (opcionales) ----------
+            out_rows = {"contratos": [], "activos": []}
+
+            if payload.include and payload.include.contratos:
+                cur.execute(f"""
+                    select
+                      c.no_contrato, c.cliente, c.tipo_de_activo,
+                      c.plazo_del_arrendamiento, c.fecha_de_inicio, c.fecha_de_vencimiento,
+                      c.saldo_insoluto_inicio_mes, c.pagos_historicos_c_iva,
+                      c.raw->>'FLUJO MENSUAL S/IVA' as flujo_mensual_s_iva,
+                      c.raw->>'FLUJOS FUTUROS INICIO MES' as flujos_futuros_inicio_mes
+                    from public.cartera_historica c
+                    where {where_cartera}
+                    order by c.updated_at desc
+                    limit %s;
+                """, params_cartera + [limit])
+                out_rows["contratos"] = _rows_to_dicts(cur)
+
+            if payload.include and payload.include.activos:
+                # Si viene contrato, filtramos por contrato. Si no, buscamos por q dentro de activos.
+                if scope == "contrato":
+                    cur.execute("""
+                        select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
+                               numero_de_serie, numero_de_motor, aseguradora, poliza,
+                               inicio_vigencia_poliza, fin_vigencia_poliza
+                        from public.activos_historico
+                        where no_contrato = %s
+                        order by identificador
+                        limit %s;
+                    """, (no_contrato, limit))
+                else:
+                    if not q:
+                        raise HTTPException(status_code=400, detail="include.activos without scope=contrato requires q")
+                    cur.execute("""
+                        select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
+                               numero_de_serie, numero_de_motor, aseguradora, poliza,
+                               inicio_vigencia_poliza, fin_vigencia_poliza
+                        from public.activos_historico
+                        where descripcion ilike %s
+                           or numero_de_serie ilike %s
+                           or numero_de_motor ilike %s
+                           or poliza ilike %s
+                        order by updated_at desc
+                        limit %s;
+                    """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit))
+                out_rows["activos"] = _rows_to_dicts(cur)
+
+        return {
+            "filters_applied": {"scope": scope, "q": q or None, "no_contrato": no_contrato or None},
+            "metrics": metrics_out,
+            "rows": out_rows
+        }
+    finally:
+        conn.close()
+
+
 # -------------------------------------------------
 # HEALTH CHECK
 # -------------------------------------------------
