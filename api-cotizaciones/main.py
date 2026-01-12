@@ -978,7 +978,7 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
                           (no_contrato, cliente, tipo_de_activo, plazo_del_arrendamiento,
                            fecha_de_inicio, fecha_de_vencimiento,
                            tasa_de_interes, saldo_insoluto_inicio_mes, pagos_historicos_c_iva,
-                           raw, updated_at)
+                           raw)
                         values %s
                         on conflict (no_contrato) do update set
                           cliente = excluded.cliente,
@@ -1000,7 +1000,7 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
                            descripcion, numero_de_serie, numero_de_motor,
                            fecha_de_inicio, fecha_de_vencimiento,
                            aseguradora, poliza, inicio_vigencia_poliza, fin_vigencia_poliza,
-                           raw, updated_at)
+                           raw)
                         values %s
                         on conflict (identificador) do update set
                           no_contrato = excluded.no_contrato,
