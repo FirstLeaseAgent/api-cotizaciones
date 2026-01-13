@@ -1148,10 +1148,32 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
         params_cartera = []
 
     elif scope == "activo":
-        # Para "activo" vamos a consultar principalmente activos_historico,
-        # pero métricas de cartera pueden venir por contrato o cliente si mandan no_contrato o q.
-        where_cartera = "1=1"
-        params_cartera = []
+        if not q:
+            raise HTTPException(status_code=400, detail="scope=activo requires q")
+
+        q_clean = q.strip()
+
+        # Si son 4 dígitos, interpretarlo como tercer bloque del contrato y filtrar SOLO por contrato
+        if len(q_clean) == 4 and q_clean.isdigit():
+            where_activos = "(a.no_contrato ILIKE %s OR a.contrato_interno ILIKE %s)"
+            params_activos = [f"%-{q_clean}-%", f"%{q_clean}%"]
+        else:
+            # búsqueda amplia (texto libre)
+            like = f"%{q_clean}%"
+            where_activos = """
+            (
+                a.no_contrato ILIKE %s OR
+                a.contrato_interno ILIKE %s OR
+                a.cliente ILIKE %s OR
+                a.tipo_de_activo ILIKE %s OR
+                a.descripcion ILIKE %s OR
+                a.numero_de_serie ILIKE %s OR
+                a.numero_de_motor ILIKE %s OR
+                a.aseguradora ILIKE %s OR
+                a.poliza ILIKE %s
+            )
+            """
+            params_activos = [like, like, like, like, like, like, like, like, like]
     else:
         raise HTTPException(status_code=400, detail="Invalid scope")
 
