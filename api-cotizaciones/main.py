@@ -1108,6 +1108,10 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
     where_cartera = "1=1"
     params_cartera = []
 
+    # Filtros para activos (se inicializan siempre)
+    where_activos = None
+    params_activos = None
+
     if scope == "cliente":
         if not q:
             raise HTTPException(status_code=400, detail="scope=cliente requires q (cliente)")
@@ -1153,17 +1157,23 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
 
         q_clean = q.strip()
 
-        # Si son 4 dígitos, interpretarlo como tercer bloque del contrato y filtrar SOLO por contrato
-        if len(q_clean) == 4 and q_clean.isdigit():
-            where_activos = "(a.no_contrato ILIKE %s OR a.contrato_interno ILIKE %s)"
-            params_activos = [f"%-{q_clean}-%", f"%{q_clean}%"]
+        # 1) Si parece contrato completo (tiene 3+ guiones), match exacto por no_contrato
+        if q_clean.count("-") >= 3:
+            where_activos = "a.no_contrato = %s"
+            params_activos = [q_clean]
+
+        # 2) Si son 4 dígitos, match por 3er bloque (ignora ceros a la izquierda)
+        elif len(q_clean) == 4 and q_clean.isdigit():
+            where_activos = "ltrim(split_part(a.no_contrato, '-', 3), '0') = ltrim(%s, '0')"
+            params_activos = [q_clean]
+
+        # 3) Búsqueda amplia (texto libre)
         else:
-            # búsqueda amplia (texto libre)
             like = f"%{q_clean}%"
             where_activos = """
             (
                 a.no_contrato ILIKE %s OR
-                a.contrato_interno ILIKE %s OR
+                coalesce(a.contrato_interno,'') ILIKE %s OR
                 a.cliente ILIKE %s OR
                 a.tipo_de_activo ILIKE %s OR
                 a.descripcion ILIKE %s OR
@@ -1174,6 +1184,29 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
             )
             """
             params_activos = [like, like, like, like, like, like, like, like, like]
+
+        cur.execute(f"""
+            select
+                a.identificador,
+                a.no_contrato,
+                a.cliente,
+                a.tipo_de_activo,
+                a.descripcion,
+                a.numero_de_serie,
+                a.numero_de_motor,
+                a.aseguradora,
+                a.poliza,
+                a.inicio_vigencia_poliza,
+                a.fin_vigencia_poliza
+            from public.activos_historico a
+            where {where_activos}
+            order by a.no_contrato asc, a.identificador asc
+            limit %s;
+        """, params_activos + [limit])
+
+        activos = cur.fetchall()
+        cols = [d[0] for d in cur.description]
+        out_rows["activos"] = [dict(zip(cols, r)) for r in activos]
     else:
         raise HTTPException(status_code=400, detail="Invalid scope")
 
@@ -1375,34 +1408,89 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                 """, params_cartera + [limit])
                 out_rows["contratos"] = _rows_to_dicts(cur)
 
-            if payload.include and payload.include.activos:
-                # Si viene contrato, filtramos por contrato. Si no, buscamos por q dentro de activos.
-                if scope == "contrato":
-                    cur.execute("""
-                        select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
-                               numero_de_serie, numero_de_motor, aseguradora, poliza,
-                               inicio_vigencia_poliza, fin_vigencia_poliza
-                        from public.activos_historico
-                        where no_contrato = %s
-                        order by identificador
+            # ---------- LISTADOS (opcionales) ----------
+            out_rows = {"contratos": [], "activos": []}
+
+            if payload.include and payload.include.contratos:
+                cur.execute(f"""
+                    select
+                    c.no_contrato, c.cliente, c.tipo_de_activo,
+                    c.plazo_del_arrendamiento, c.fecha_de_inicio, c.fecha_de_vencimiento,
+                    c.saldo_insoluto_inicio_mes, c.pagos_historicos_c_iva,
+                    c.raw->>'FLUJO MENSUAL S/IVA' as flujo_mensual_s_iva,
+                    c.raw->>'FLUJOS FUTUROS INICIO MES' as flujos_futuros_inicio_mes
+                    from public.cartera_historica c
+                    where {where_cartera}
+                    order by c.updated_at desc
+                    limit %s;
+                """, params_cartera + [limit])
+                out_rows["contratos"] = _rows_to_dicts(cur)
+
+            # Mostrar activos cuando:
+            # - el scope sea "activo" (aunque no venga include.activos)
+            # - o cuando venga include.activos=true
+            want_activos = (scope == "activo") or (payload.include and payload.include.activos)
+
+            if want_activos:
+                if scope == "activo":
+                    # usar el filtro preparado arriba
+                    cur.execute(f"""
+                        select
+                            a.identificador, a.no_contrato, a.cliente, a.tipo_de_activo, a.descripcion,
+                            a.numero_de_serie, a.numero_de_motor, a.aseguradora, a.poliza,
+                            a.inicio_vigencia_poliza, a.fin_vigencia_poliza
+                        from public.activos_historico a
+                        where {where_activos}
+                        order by a.no_contrato asc, a.identificador asc
                         limit %s;
-                    """, (no_contrato, limit))
+                    """, params_activos + [limit])
+                    out_rows["activos"] = _rows_to_dicts(cur)
+
+                elif scope == "contrato":
+                    # soportar contrato completo o 4 dígitos
+                    nc = (no_contrato or q or "").strip()
+                    if not nc:
+                        raise HTTPException(status_code=400, detail="include.activos with scope=contrato requires no_contrato (or q)")
+
+                    if len(nc) == 4 and nc.isdigit():
+                        cur.execute("""
+                            select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
+                                numero_de_serie, numero_de_motor, aseguradora, poliza,
+                                inicio_vigencia_poliza, fin_vigencia_poliza
+                            from public.activos_historico
+                            where ltrim(split_part(no_contrato,'-',3),'0') = ltrim(%s,'0')
+                            order by identificador
+                            limit %s;
+                        """, (nc, limit))
+                    else:
+                        cur.execute("""
+                            select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
+                                numero_de_serie, numero_de_motor, aseguradora, poliza,
+                                inicio_vigencia_poliza, fin_vigencia_poliza
+                            from public.activos_historico
+                            where no_contrato = %s
+                            order by identificador
+                            limit %s;
+                        """, (nc, limit))
+
+                    out_rows["activos"] = _rows_to_dicts(cur)
+
                 else:
-                    if not q:
-                        raise HTTPException(status_code=400, detail="include.activos without scope=contrato requires q")
-                    cur.execute("""
-                        select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
-                               numero_de_serie, numero_de_motor, aseguradora, poliza,
-                               inicio_vigencia_poliza, fin_vigencia_poliza
-                        from public.activos_historico
-                        where descripcion ilike %s
-                           or numero_de_serie ilike %s
-                           or numero_de_motor ilike %s
-                           or poliza ilike %s
-                        order by updated_at desc
-                        limit %s;
-                    """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit))
-                out_rows["activos"] = _rows_to_dicts(cur)
+                    # otros scopes: solo si hay q, búsqueda simple por texto (opcional)
+                    if q:
+                        cur.execute("""
+                            select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
+                                numero_de_serie, numero_de_motor, aseguradora, poliza,
+                                inicio_vigencia_poliza, fin_vigencia_poliza
+                            from public.activos_historico
+                            where descripcion ilike %s
+                            or numero_de_serie ilike %s
+                            or numero_de_motor ilike %s
+                            or poliza ilike %s
+                            order by updated_at desc
+                            limit %s;
+                        """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit))
+                        out_rows["activos"] = _rows_to_dicts(cur)
 
         return {
             "filters_applied": {"scope": scope, "q": q or None, "no_contrato": no_contrato or None},
