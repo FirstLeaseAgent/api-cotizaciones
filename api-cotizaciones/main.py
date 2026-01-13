@@ -1104,18 +1104,22 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
     no_contrato = (payload.no_contrato or "").strip()
     limit = _clamp_limit(payload.limit)
 
-    # Filtros base
+    # -----------------------------
+    # Filtros base (cartera)
+    # -----------------------------
     where_cartera = "1=1"
-    params_cartera = []
+    params_cartera: list = []
 
-    # Filtros para activos (se inicializan siempre)
-    where_activos = None
-    params_activos = None
+    # -----------------------------
+    # Filtros activos (solo se usan si scope=activo)
+    # -----------------------------
+    where_activos: Optional[str] = None
+    params_activos: Optional[list] = None
 
     if scope == "cliente":
         if not q:
             raise HTTPException(status_code=400, detail="scope=cliente requires q (cliente)")
-        where_cartera = "c.cliente ilike %s"
+        where_cartera = "c.cliente ILIKE %s"
         params_cartera = [f"%{q}%"]
 
     elif scope == "contrato":
@@ -1146,7 +1150,7 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                         status_code=404,
                         detail="Contrato no encontrado con el identificador proporcionado"
                     )
-            
+
     elif scope == "cartera":
         where_cartera = "1=1"
         params_cartera = []
@@ -1185,28 +1189,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
             """
             params_activos = [like, like, like, like, like, like, like, like, like]
 
-        cur.execute(f"""
-            select
-                a.identificador,
-                a.no_contrato,
-                a.cliente,
-                a.tipo_de_activo,
-                a.descripcion,
-                a.numero_de_serie,
-                a.numero_de_motor,
-                a.aseguradora,
-                a.poliza,
-                a.inicio_vigencia_poliza,
-                a.fin_vigencia_poliza
-            from public.activos_historico a
-            where {where_activos}
-            order by a.no_contrato asc, a.identificador asc
-            limit %s;
-        """, params_activos + [limit])
-
-        activos = cur.fetchall()
-        cols = [d[0] for d in cur.description]
-        out_rows["activos"] = [dict(zip(cols, r)) for r in activos]
     else:
         raise HTTPException(status_code=400, detail="Invalid scope")
 
@@ -1220,11 +1202,14 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
         with conn, conn.cursor() as cur:
 
             # ---------- MÉTRICAS ----------
-            for m in payload.metrics:
+            for m in (payload.metrics or []):
                 m = (m or "").strip().lower()
 
                 if m == "conteo_contratos":
-                    cur.execute(f"select count(*) as conteo_contratos from public.cartera_historica c where {where_cartera};", params_cartera)
+                    cur.execute(
+                        f"select count(*) as conteo_contratos from public.cartera_historica c where {where_cartera};",
+                        params_cartera
+                    )
                     metrics_out["conteo_contratos"] = int(cur.fetchone()[0] or 0)
 
                 elif m == "vigentes_terminados":
@@ -1239,7 +1224,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     metrics_out["vigentes_terminados"] = {"vigentes": int(r[0] or 0), "terminados": int(r[1] or 0)}
 
                 elif m == "suma_rentas_vigentes":
-                    # Flujo mensual (S/IVA) *solo vigentes* (saldo insoluto > 0)
                     cur.execute(f"""
                         select coalesce(sum({raw_num('FLUJO MENSUAL S/IVA')}),0) as suma_rentas_vigentes
                         from public.cartera_historica c
@@ -1249,7 +1233,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     metrics_out["suma_rentas_vigentes"] = float(cur.fetchone()[0] or 0)
 
                 elif m == "suma_cartera":
-                    # Cartera = suma de flujos_futuros_inicio_mes (columna normalizada)
                     cur.execute(f"""
                         select coalesce(sum(coalesce(c.flujos_futuros_inicio_mes, 0)), 0) as suma_cartera
                         from public.cartera_historica c
@@ -1274,7 +1257,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     metrics_out["saldo_insoluto"] = float(cur.fetchone()[0] or 0)
 
                 elif m == "rentas_por_devengar":
-                    # Si es contrato, devolvemos el valor del contrato; si es cliente/cartera, suma
                     if scope == "contrato":
                         cur.execute(f"""
                             select c.no_contrato,
@@ -1310,7 +1292,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     metrics_out["valor_residual"] = float(cur.fetchone()[0] or 0)
 
                 elif m == "condiciones":
-                    # Solo tiene sentido por contrato (regresamos un objeto)
                     if scope != "contrato":
                         metrics_out["condiciones"] = "scope=contrato required"
                     else:
@@ -1377,7 +1358,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                         }
 
                 elif m == "desde_cuando_cliente":
-                    # min(fecha_inicio) por cliente (o filtro actual)
                     cur.execute(f"""
                         select min(c.fecha_de_inicio) as desde_cuando
                         from public.cartera_historica c
@@ -1387,10 +1367,9 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     metrics_out["desde_cuando_cliente"] = (r[0].isoformat() if r and r[0] else None)
 
                 else:
-                    # ignoramos métricas desconocidas para no romper al agente
                     metrics_out[m] = "unknown_metric"
 
-            # ---------- LISTADOS (opcionales) ----------
+            # ---------- LISTADOS ----------
             out_rows = {"contratos": [], "activos": []}
 
             if payload.include and payload.include.contratos:
@@ -1408,32 +1387,15 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                 """, params_cartera + [limit])
                 out_rows["contratos"] = _rows_to_dicts(cur)
 
-            # ---------- LISTADOS (opcionales) ----------
-            out_rows = {"contratos": [], "activos": []}
-
-            if payload.include and payload.include.contratos:
-                cur.execute(f"""
-                    select
-                    c.no_contrato, c.cliente, c.tipo_de_activo,
-                    c.plazo_del_arrendamiento, c.fecha_de_inicio, c.fecha_de_vencimiento,
-                    c.saldo_insoluto_inicio_mes, c.pagos_historicos_c_iva,
-                    c.raw->>'FLUJO MENSUAL S/IVA' as flujo_mensual_s_iva,
-                    c.raw->>'FLUJOS FUTUROS INICIO MES' as flujos_futuros_inicio_mes
-                    from public.cartera_historica c
-                    where {where_cartera}
-                    order by c.updated_at desc
-                    limit %s;
-                """, params_cartera + [limit])
-                out_rows["contratos"] = _rows_to_dicts(cur)
-
             # Mostrar activos cuando:
-            # - el scope sea "activo" (aunque no venga include.activos)
-            # - o cuando venga include.activos=true
+            # - scope sea "activo" (siempre regresa activos)
+            # - o include.activos = true
             want_activos = (scope == "activo") or (payload.include and payload.include.activos)
 
             if want_activos:
                 if scope == "activo":
-                    # usar el filtro preparado arriba
+                    if not where_activos or not params_activos:
+                        raise HTTPException(status_code=400, detail="scope=activo requires q")
                     cur.execute(f"""
                         select
                             a.identificador, a.no_contrato, a.cliente, a.tipo_de_activo, a.descripcion,
@@ -1447,7 +1409,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     out_rows["activos"] = _rows_to_dicts(cur)
 
                 elif scope == "contrato":
-                    # soportar contrato completo o 4 dígitos
                     nc = (no_contrato or q or "").strip()
                     if not nc:
                         raise HTTPException(status_code=400, detail="include.activos with scope=contrato requires no_contrato (or q)")
@@ -1455,8 +1416,8 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     if len(nc) == 4 and nc.isdigit():
                         cur.execute("""
                             select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
-                                numero_de_serie, numero_de_motor, aseguradora, poliza,
-                                inicio_vigencia_poliza, fin_vigencia_poliza
+                                   numero_de_serie, numero_de_motor, aseguradora, poliza,
+                                   inicio_vigencia_poliza, fin_vigencia_poliza
                             from public.activos_historico
                             where ltrim(split_part(no_contrato,'-',3),'0') = ltrim(%s,'0')
                             order by identificador
@@ -1465,28 +1426,27 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     else:
                         cur.execute("""
                             select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
-                                numero_de_serie, numero_de_motor, aseguradora, poliza,
-                                inicio_vigencia_poliza, fin_vigencia_poliza
+                                   numero_de_serie, numero_de_motor, aseguradora, poliza,
+                                   inicio_vigencia_poliza, fin_vigencia_poliza
                             from public.activos_historico
                             where no_contrato = %s
                             order by identificador
                             limit %s;
                         """, (nc, limit))
-
                     out_rows["activos"] = _rows_to_dicts(cur)
 
                 else:
-                    # otros scopes: solo si hay q, búsqueda simple por texto (opcional)
+                    # otros scopes: solo si hay q (búsqueda simple)
                     if q:
                         cur.execute("""
                             select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
-                                numero_de_serie, numero_de_motor, aseguradora, poliza,
-                                inicio_vigencia_poliza, fin_vigencia_poliza
+                                   numero_de_serie, numero_de_motor, aseguradora, poliza,
+                                   inicio_vigencia_poliza, fin_vigencia_poliza
                             from public.activos_historico
                             where descripcion ilike %s
-                            or numero_de_serie ilike %s
-                            or numero_de_motor ilike %s
-                            or poliza ilike %s
+                               or numero_de_serie ilike %s
+                               or numero_de_motor ilike %s
+                               or poliza ilike %s
                             order by updated_at desc
                             limit %s;
                         """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit))
@@ -1499,7 +1459,6 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
         }
     finally:
         conn.close()
-
 
 # -------------------------------------------------
 # HEALTH CHECK
