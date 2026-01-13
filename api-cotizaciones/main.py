@@ -1194,9 +1194,9 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     metrics_out["suma_rentas_vigentes"] = float(cur.fetchone()[0] or 0)
 
                 elif m == "suma_cartera":
-                    # Cartera = suma de FLUJOS FUTUROS INICIO MES (según tu regla)
+                    # Cartera = suma de flujos_futuros_inicio_mes (columna normalizada)
                     cur.execute(f"""
-                        select coalesce(sum({raw_num('FLUJOS FUTUROS INICIO MES')}),0) as suma_cartera
+                        select coalesce(sum(coalesce(c.flujos_futuros_inicio_mes, 0)), 0) as suma_cartera
                         from public.cartera_historica c
                         where {where_cartera};
                     """, params_cartera)
