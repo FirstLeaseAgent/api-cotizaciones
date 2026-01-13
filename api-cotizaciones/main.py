@@ -1116,13 +1116,33 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
 
     elif scope == "contrato":
         if not no_contrato:
-            # permitimos que venga en q también
             no_contrato = q
         if not no_contrato:
             raise HTTPException(status_code=400, detail="scope=contrato requires no_contrato (or q)")
-        where_cartera = "c.no_contrato = %s"
-        params_cartera = [no_contrato]
 
+        no_contrato_clean = no_contrato.strip()
+
+        # Si son 4 dígitos, interpretarlo como el 3er bloque del contrato: XXXXX-XXXXX-0166-XXX
+        if len(no_contrato_clean) == 4 and no_contrato_clean.isdigit():
+            where_cartera = "c.no_contrato ILIKE %s"
+            params_cartera = [f"%-{no_contrato_clean}-%"]
+        else:
+            where_cartera = "c.no_contrato = %s"
+            params_cartera = [no_contrato_clean]
+
+        # 🔎 PRECHECK: validar que el contrato exista
+        with _get_cartera_conn() as conn_check:
+            with conn_check.cursor() as cur_check:
+                cur_check.execute(
+                    f"SELECT 1 FROM public.cartera_historica c WHERE {where_cartera} LIMIT 1;",
+                    params_cartera
+                )
+                if cur_check.fetchone() is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Contrato no encontrado con el identificador proporcionado"
+                    )
+            
     elif scope == "cartera":
         where_cartera = "1=1"
         params_cartera = []
