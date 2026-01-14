@@ -567,7 +567,8 @@ def cotizar(data: CotizacionRequest, request: Request):
     # Nuevas variables de negocio (para plantillas)
     # 1) Si el seguro no es financiado -> seguro_contado_flag = True => Plan Clásico y usa div_plan_clasico
     #    Si el seguro es financiado -> Premium y usa div_plan (del request si viene, si no el default)
-    plan = "Clasico" if seguro_contado_flag else "Premium"
+    plan = "CLASICO" if seguro_contado_flag else "PREMIUM"
+    plantag = "Gastos de Administración" if seguro_contado_flag else "Membresía Plan Premium"
     div_plan_default = float(VARIABLES.get("div_plan", DEFAULT_VARIABLES["div_plan"]))
     div_plan_clasico = float(VARIABLES.get("div_plan_clasico", DEFAULT_VARIABLES["div_plan_clasico"]))
     div_plan_effective = (div_plan_clasico if seguro_contado_flag else (data.div_plan if data.div_plan is not None else div_plan_default))
@@ -594,6 +595,7 @@ def cotizar(data: CotizacionRequest, request: Request):
         "ptotal": formato_miles(data.valor + accesorios),
         "fecha": datetime.now(TIMEZONE).strftime("%d/%m/%Y"),
         "plan": plan,
+        "plantag":plantag,
         "div_plan": div_plan_effective,
         "segbool": segbool,
         "gestbool": gestbool,
