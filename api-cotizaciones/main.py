@@ -82,11 +82,11 @@ DEFAULT_VARIABLES = {
 
     # Seguro por monto (se evalúa contra VALOR CON IVA)
     "seguro_por_monto": [
-        {"max_valor_con_iva": 500000, "porcentaje": 0.04},
-        {"max_valor_con_iva": 750000, "porcentaje": 0.035},
-        {"max_valor_con_iva": 1000000, "porcentaje": 0.03},
-        {"max_valor_con_iva": 1500000, "porcentaje": 0.0275},
-        {"max_valor_con_iva": 5000000, "porcentaje": 0.025},
+        {"max_valor_con_iva": 499999, "porcentaje": 0.04},
+        {"max_valor_con_iva": 749999, "porcentaje": 0.035},
+        {"max_valor_con_iva": 999999, "porcentaje": 0.03},
+        {"max_valor_con_iva": 1499999, "porcentaje": 0.0275},
+        {"max_valor_con_iva": 4999999, "porcentaje": 0.025},
         {"max_valor_con_iva": 9999999999, "porcentaje": 0.025},
     ],
 
