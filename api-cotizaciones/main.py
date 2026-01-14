@@ -70,6 +70,7 @@ DEFAULT_VARIABLES = {
     "comision_default": 3.0,
     "div_plan": 48.0,      # % del subtotal que se va a "Renta_Plan"
     "gestoria": 2000.0,    # costo fijo de gestoría (con IVA en lógica original)
+    "div_plan_clasico": 40.0,  # % del subtotal que se va a "Renta_Plan" cuando el seguro NO es financiado (Plan Clásico)
 
     # Residuales por plazo (si no vienen en el request)
     "residuales_default": [
@@ -195,6 +196,8 @@ class CotizacionRequest(BaseModel):
     tasa_anual: Optional[float] = None
     comision: Optional[float] = None
     rentas_deposito: Optional[float] = None
+    div_plan: Optional[float] = None
+    gestoria: Optional[float] = None
 
     # Seguro:
     #   None o -1 -> calcular por tabla (seguro_por_monto)
@@ -233,6 +236,9 @@ def refresh_cotizar_example():
         "localizador_inicial": VARIABLES["localizador_inicial_default"],
         "localizador_anual": VARIABLES["localizador_anual_default"],
         "residuales": VARIABLES["residuales_default"],
+        "gestoria":0,
+        "div_plan":VARIABLES["div_plan"],
+        "div_plan_clasico":VARIABLES["div_plan_clasico"]
     }
 
     CotizacionRequest.model_config["json_schema_extra"] = {
@@ -264,6 +270,7 @@ class VariablesUpdate(BaseModel):
     localizador_anual_default: Optional[float] = None
     residuales_default: Optional[List[ResidualConfig]] = None
     seguro_por_monto: Optional[List[SeguroRango]] = None
+    div_plan_clasico: Optional[float] = None
 
 
 # -------------------------------------------------
@@ -516,7 +523,8 @@ def convertir_pdf(path_word, output_dir):
 @app.post("/cotizar")
 def cotizar(data: CotizacionRequest, request: Request):
     # Cargar variables actuales
-    div_plan = VARIABLES.get("div_plan", DEFAULT_VARIABLES["div_plan"])
+    div_plan_default = VARIABLES.get("div_plan", DEFAULT_VARIABLES["div_plan"])
+    div_plan_clasico = VARIABLES.get("div_plan_clasico", DEFAULT_VARIABLES["div_plan_clasico"])
     gestoria = VARIABLES.get("gestoria", DEFAULT_VARIABLES["gestoria"])
 
     # Resolver defaults dinámicos
@@ -555,6 +563,28 @@ def cotizar(data: CotizacionRequest, request: Request):
     # Seguro anual (sin IVA)
     seguro_anual = calcular_seguro_anual(data.valor, data.seguro_anual)
     seguro_contado_flag = data.seguro_contado
+    # -------------------------
+    # Nuevas variables de negocio (para plantillas)
+    # 1) Si el seguro no es financiado -> seguro_contado_flag = True => Plan Clásico y usa div_plan_clasico
+    #    Si el seguro es financiado -> Premium y usa div_plan (del request si viene, si no el default)
+    plan = "Clasico" if seguro_contado_flag else "Premium"
+    div_plan_default = float(VARIABLES.get("div_plan", DEFAULT_VARIABLES["div_plan"]))
+    div_plan_clasico = float(VARIABLES.get("div_plan_clasico", DEFAULT_VARIABLES["div_plan_clasico"]))
+    div_plan_effective = (div_plan_clasico if seguro_contado_flag else (data.div_plan if data.div_plan is not None else div_plan_default))
+
+    # Flags para plantilla
+    segbool = "NO" if seguro_contado_flag else "SI"
+    gpsbool = "SI" if ((loc_ini or 0) > 0 or (loc_anual or 0) > 0) else "NO"
+
+    # ✅ Gestoría efectiva: si el request trae gestoria úsala; si no, usa la variable default; si no existe, 0
+    gestoria_effective = (
+        data.gestoria
+        if (hasattr(data, "gestoria") and data.gestoria is not None)
+        else VARIABLES.get("gestoria", DEFAULT_VARIABLES.get("gestoria", 0))
+    )
+    gestoria_effective = float(gestoria_effective or 0.0)
+    # Flags para plantilla (usar effective)
+    gestbool = "SI" if gestoria_effective > 0 else "NO"
 
     valores_para_doc = {
         "nombre": nombre_upper,
@@ -563,6 +593,11 @@ def cotizar(data: CotizacionRequest, request: Request):
         "accesorios": formato_miles(accesorios),
         "ptotal": formato_miles(data.valor + accesorios),
         "fecha": datetime.now(TIMEZONE).strftime("%d/%m/%Y"),
+        "plan": plan,
+        "div_plan": div_plan_effective,
+        "segbool": segbool,
+        "gestbool": gestbool,
+        "gpsbool": gpsbool,
         "folio": folio,
     }
 
@@ -580,8 +615,8 @@ def cotizar(data: CotizacionRequest, request: Request):
             rentas_deposito=rentas_deposito,
             seguro_anual=seguro_anual,
             seguro_contado_flag=seguro_contado_flag,
-            div_plan_pct=div_plan,
-            gestoria=gestoria,
+            div_plan_pct=div_plan_effective,
+            gestoria=gestoria_effective,
             accesorios_con_iva=accesorios,
             localizador_inicial_con_iva=loc_ini,
             localizador_anual_con_iva=loc_anual,
@@ -650,6 +685,13 @@ def cotizar(data: CotizacionRequest, request: Request):
             "seguro_anual": float(seguro_anual),
             "seguro_contado": seguro_contado_flag,
             "tasa_anual": tasa_anual,
+            "div_plan": div_plan_effective,
+            "div_plan_clasico": div_plan_clasico,
+            "gestoria": gestoria,
+            "plan": plan,
+            "segbool": segbool,
+            "gestbool": gestbool,
+            "gpsbool": gpsbool,
         }
     }
 
