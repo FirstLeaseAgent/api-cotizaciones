@@ -197,6 +197,7 @@ class CotizacionRequest(BaseModel):
     comision: Optional[float] = None
     rentas_deposito: Optional[float] = None
     div_plan: Optional[float] = None
+    div_plan_clasico: Optional[float] = None
     gestoria: Optional[float] = None
 
     # Seguro:
@@ -571,7 +572,20 @@ def cotizar(data: CotizacionRequest, request: Request):
     plantag = "Gastos de Administración" if seguro_contado_flag else "Membresía Plan Premium"
     div_plan_default = float(VARIABLES.get("div_plan", DEFAULT_VARIABLES["div_plan"]))
     div_plan_clasico = float(VARIABLES.get("div_plan_clasico", DEFAULT_VARIABLES["div_plan_clasico"]))
-    div_plan_effective = (div_plan_clasico if seguro_contado_flag else (data.div_plan if data.div_plan is not None else div_plan_default))
+    if seguro_contado_flag:
+        div_plan_effective = (
+            data.div_plan_clasico
+            if data.div_plan_clasico is not None
+            else div_plan_clasico
+        )
+        div_plan_usado = "div_plan_clasico"
+    else:
+        div_plan_effective = (
+            data.div_plan
+            if data.div_plan is not None
+            else div_plan_default
+        )
+        div_plan_usado = "div_plan"
 
     # Flags para plantilla
     segbool = "NO" if seguro_contado_flag else "SI"
@@ -687,8 +701,8 @@ def cotizar(data: CotizacionRequest, request: Request):
             "seguro_anual": float(seguro_anual),
             "seguro_contado": seguro_contado_flag,
             "tasa_anual": tasa_anual,
-            "div_plan": div_plan_effective,
-            "div_plan_clasico": div_plan_clasico,
+            "div_plan_utilizado": div_plan_usado,
+            "div_plan_valor_utilizado": div_plan_effective,
             "gestoria": gestoria,
             "plan": plan,
             "segbool": segbool,
