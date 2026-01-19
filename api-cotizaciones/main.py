@@ -203,7 +203,7 @@ class CotizacionRequest(BaseModel):
     # Seguro:
     #   None o -1 -> calcular por tabla (seguro_por_monto)
     #   0 -> gratis
-    #   >0 -> monto anual sin IVA
+    #   >0 -> monto anual con IVA
     seguro_anual: Optional[float] = -1
     seguro_contado: bool = False  # True = contado / False = financiado
 
@@ -304,8 +304,8 @@ def calcular_seguro_anual(valor_con_iva: float, entrada: Optional[float]) -> Dec
     if entrada == 0:
         return Decimal("0")
 
-    # Caso: monto proporcionado (ya sin IVA)
-    return Decimal(str(entrada))
+    # Caso: monto proporcionado (viene CON IVA)
+    return (Decimal(str(entrada)) / Decimal("1.16")).quantize(Decimal("0.01"))
 
 
 # -------------------------------------------------
@@ -698,7 +698,7 @@ def cotizar(data: CotizacionRequest, request: Request):
             "localizador_inicial": loc_ini,
             "rentas_deposito": rentas_deposito,
             "residuales": escenarios,   # ← Los plazos+residual realmente utilizados
-            "seguro_anual": float(seguro_anual),
+            "seguro_anual": float((seguro_anual * Decimal("1.16")).quantize(Decimal("0.01"))),
             "seguro_contado": seguro_contado_flag,
             "tasa_anual": tasa_anual,
             "div_plan_utilizado": div_plan_usado,
@@ -1204,10 +1204,16 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                     params_cartera
                 )
                 if cur_check.fetchone() is None:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="Contrato no encontrado con el identificador proporcionado"
-                    )
+                        return {
+                            "ok": False,
+                            "error": {
+                                "code": "CONTRACT_NOT_FOUND",
+                                "detail": "Contrato no encontrado con el identificador proporcionado"
+                            },
+                            "filters_applied": {"scope": scope, "q": q or None, "no_contrato": no_contrato_clean},
+                            "metrics": {},
+                            "rows": {"contratos": [], "activos": []},
+                        }
 
     elif scope == "cartera":
         where_cartera = "1=1"
