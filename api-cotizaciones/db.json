@@ -57,57 +57,94 @@
         }
     ],
     "variables": {
-        "tasa_anual_default": 27.0,
-        "enganche_default": 10.0,
-        "rentas_deposito_default": 0.0,
-        "comision_default": 3.0,
-        "div_plan": 48.0,
-        "gestoria": 2320.0,
-        "residuales_default": [
-            {
-                "plazo": 24,
-                "residual": 40.0
+        "planes": {
+            "CLASICO": {
+                "div_plan": 40.0,
+                "gestoria": 2320.0,
+                "seguro_anual": -1.0,
+                "seguro_contado": true,
+                "localizador_anual": 1976.64,
+                "localizador_inicial": 4491.52,
+                "segurotag": "Seguro de Da\u00f1os",
+                "GPStag": "GPS",
+                "plantag": "Gastos de Administraci\u00f3n",
+                "autobool": "NO"
             },
-            {
-                "plazo": 36,
-                "residual": 30.0
+            "PLUS": {
+                "div_plan": 44.0,
+                "gestoria": 2320.0,
+                "seguro_anual": -1.0,
+                "seguro_contado": false,
+                "localizador_anual": 1976.64,
+                "localizador_inicial": 4491.52,
+                "segurotag": "Seguro con Deducibles 5 y 10%",
+                "GPStag": "GPS con Plataforma de Rastreo",
+                "plantag": "Membres\u00eda Plan Plus",
+                "autobool": "NO"
             },
-            {
-                "plazo": 48,
-                "residual": 25.0
-            },
-            {
-                "plazo": 60,
-                "residual": 20.0
+            "PREMIUM": {
+                "div_plan": 48.0,
+                "gestoria": 2320.0,
+                "seguro_anual": -1.0,
+                "seguro_contado": false,
+                "localizador_anual": 1976.64,
+                "localizador_inicial": 4491.52,
+                "segurotag": "Seguro Premium Deducibles 3 y 5%",
+                "GPStag": "GPS con Plataforma de Rastreo",
+                "plantag": "Membres\u00eda Plan Premium",
+                "autobool": "SI"
             }
-        ],
-        "seguro_por_monto": [
-            {
-                "max_valor_con_iva": 500000.0,
-                "porcentaje": 0.04
-            },
-            {
-                "max_valor_con_iva": 750000.0,
-                "porcentaje": 0.035
-            },
-            {
-                "max_valor_con_iva": 1000000.0,
-                "porcentaje": 0.03
-            },
-            {
-                "max_valor_con_iva": 1500000.0,
-                "porcentaje": 0.0275
-            },
-            {
-                "max_valor_con_iva": 5000000.0,
-                "porcentaje": 0.025
-            },
-            {
-                "max_valor_con_iva": 9999999999.0,
-                "porcentaje": 0.025
-            }
-        ],
-        "localizador_inicial_default": 4491.52,
-        "localizador_anual_default": 1976.64
+        },
+        "defaults": {
+            "tasa_anual_default": 27.0,
+            "comision_default": 3.0,
+            "enganche_default": 5.0,
+            "rentas_deposito_default": 0.0,
+            "valor_default": 0.0,
+            "residuales_default": [
+                {
+                    "plazo": 24,
+                    "residual": 40.0
+                },
+                {
+                    "plazo": 36,
+                    "residual": 30.0
+                },
+                {
+                    "plazo": 48,
+                    "residual": 25.0
+                },
+                {
+                    "plazo": 60,
+                    "residual": 20.0
+                }
+            ],
+            "seguro_por_monto": [
+                {
+                    "max_valor_con_iva": 499999.0,
+                    "porcentaje": 0.04
+                },
+                {
+                    "max_valor_con_iva": 749999.0,
+                    "porcentaje": 0.035
+                },
+                {
+                    "max_valor_con_iva": 999999.0,
+                    "porcentaje": 0.03
+                },
+                {
+                    "max_valor_con_iva": 1499999.0,
+                    "porcentaje": 0.0275
+                },
+                {
+                    "max_valor_con_iva": 4999999.0,
+                    "porcentaje": 0.025
+                },
+                {
+                    "max_valor_con_iva": 9999999999.0,
+                    "porcentaje": 0.025
+                }
+            ]
+        }
     }
 }

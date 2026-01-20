@@ -12,6 +12,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
+from typing import Dict
 from decimal import Decimal, getcontext
 from docx import Document
 from datetime import datetime
@@ -63,40 +64,85 @@ CARTERA_SYNC_API_KEY = os.getenv("CARTERA_SYNC_API_KEY")
 # VARIABLES / PARÁMETROS DE NEGOCIO (por defecto)
 # -------------------------------------------------
 DEFAULT_VARIABLES = {
-    # Porcentajes y parámetros generales
-    "tasa_anual_default": 27.0,
-    "enganche_default": 10.0,
-    "rentas_deposito_default": 0.0,
-    "comision_default": 3.0,
-    "div_plan": 48.0,      # % del subtotal que se va a "Renta_Plan"
-    "gestoria": 2000.0,    # costo fijo de gestoría (con IVA en lógica original)
-    "div_plan_clasico": 40.0,  # % del subtotal que se va a "Renta_Plan" cuando el seguro NO es financiado (Plan Clásico)
-
-    # Residuales por plazo (si no vienen en el request)
-    "residuales_default": [
-        {"plazo": 24, "residual": 40},
-        {"plazo": 36, "residual": 30},
-        {"plazo": 48, "residual": 25},
-        {"plazo": 60, "residual": 20},
-    ],
-
-    # Seguro por monto (se evalúa contra VALOR CON IVA)
-    "seguro_por_monto": [
-        {"max_valor_con_iva": 499999, "porcentaje": 0.04},
-        {"max_valor_con_iva": 749999, "porcentaje": 0.035},
-        {"max_valor_con_iva": 999999, "porcentaje": 0.03},
-        {"max_valor_con_iva": 1499999, "porcentaje": 0.0275},
-        {"max_valor_con_iva": 4999999, "porcentaje": 0.025},
-        {"max_valor_con_iva": 9999999999, "porcentaje": 0.025},
-    ],
-
-    # Localizador
-    "localizador_inicial_default": 0.0,
-    "localizador_anual_default": 0.0,
+    "planes": {
+        "CLASICO": {
+            "div_plan": 40,
+            "gestoria": 2320,
+            "seguro_anual": -1,
+            "seguro_contado": True,
+            "localizador_anual": 1976.64,
+            "localizador_inicial": 4491.52,
+            "segurotag": "Seguro de Daños",
+            "GPStag": "GPS",
+            "plantag": "Gastos Administrativos",
+            "autobool": "NO",
+        },
+        "PLUS": {
+            "div_plan": 44,
+            "gestoria": 2320,
+            "seguro_anual": -1,
+            "seguro_contado": False,
+            "localizador_anual": 1976.64,
+            "localizador_inicial": 4491.52,
+            "segurotag": "Seguro con Deducibles 5 y 10%",
+            "GPStag": "GPS con Plataforma de Rastreo",
+            "plantag": "Membresia Plan Plus",
+            "autobool": "NO",
+        },
+        "PREMIUM": {
+            "div_plan": 48,
+            "gestoria": 2320,
+            "seguro_anual": -1,
+            "seguro_contado": False,
+            "localizador_anual": 1976.64,
+            "localizador_inicial": 4491.52,
+            "segurotag": "Seguro Premium Deducibles 3 y 5%",
+            "GPStag": "GPS con Plataforma de Rastreo",
+            "plantag": "Membresia Plan Premium",
+            "autobool": "SI",
+        },
+    },
+    "defaults": {
+        "tasa_anual_default": 27.0,
+        "enganche_default": 10.0,
+        "rentas_deposito_default": 0.0,
+        "comision_default": 3.0,
+        "valor_default": 0.0,
+        "residuales_default": [
+            {"plazo": 24, "residual": 40},
+            {"plazo": 36, "residual": 30},
+            {"plazo": 48, "residual": 25},
+            {"plazo": 60, "residual": 20},
+        ],
+        "seguro_por_monto": [
+            {"max_valor_con_iva": 499999, "porcentaje": 0.04},
+            {"max_valor_con_iva": 749999, "porcentaje": 0.035},
+            {"max_valor_con_iva": 999999, "porcentaje": 0.03},
+            {"max_valor_con_iva": 1499999, "porcentaje": 0.0275},
+            {"max_valor_con_iva": 4999999, "porcentaje": 0.025},
+            {"max_valor_con_iva": 9999999999, "porcentaje": 0.025},
+        ],
+    },
 }
 
 VARIABLES = DEFAULT_VARIABLES.copy()
 
+def _plan_key(plan: Optional[str]) -> str:
+    p = (plan or "PREMIUM").strip().upper()
+    return p if p else "PREMIUM"
+
+def get_defaults() -> dict:
+    d = VARIABLES.get("defaults")
+    return d if isinstance(d, dict) else DEFAULT_VARIABLES["defaults"]
+
+def get_planes() -> dict:
+    p = VARIABLES.get("planes")
+    return p if isinstance(p, dict) else DEFAULT_VARIABLES["planes"]
+
+def get_plan_cfg(plan: Optional[str]) -> dict:
+    planes = get_planes()
+    key = _plan_key(plan)
+    return planes.get(key) or planes.get("PREMIUM") or DEFAULT_VARIABLES["planes"]["PREMIUM"]
 # -------------------------------------------------
 # PLANTILLA PRINCIPAL (carga automática desde GitHub)
 # -------------------------------------------------
@@ -109,40 +155,86 @@ TEMPLATE_NAME = "Plantilla_Cotizacion.docx"
 
 def ensure_db_and_variables():
     """
-    Asegura que db.json exista y tenga llaves:
-      - plantillas: []
-      - variables: {...}
+    Asegura que db.json exista y que variables tenga la forma:
+      variables: { "planes": {...}, "defaults": {...} }
     """
     global VARIABLES
 
     if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
         with open(DB_PATH, "w") as f:
             json.dump({"plantillas": [], "variables": DEFAULT_VARIABLES}, f, indent=4)
-    else:
-        with open(DB_PATH, "r+") as f:
-            data = json.load(f)
-            changed = False
+        VARIABLES = DEFAULT_VARIABLES.copy()
+        return
 
-            if "plantillas" not in data:
-                data["plantillas"] = []
+    with open(DB_PATH, "r+") as f:
+        data = json.load(f)
+        changed = False
+
+        if "plantillas" not in data:
+            data["plantillas"] = []
+            changed = True
+
+        if "variables" not in data or not isinstance(data["variables"], dict):
+            data["variables"] = DEFAULT_VARIABLES
+            changed = True
+
+        vars_db = data["variables"]
+
+        # --- Migración: si venía estructura vieja/plana, crear defaults/planes ---
+        if "defaults" not in vars_db or "planes" not in vars_db:
+            # Si ya había algo plano, lo intentamos meter a defaults (solo las llaves que aplican)
+            legacy = vars_db.copy()
+
+            vars_db = {
+                "planes": legacy.get("planes") if isinstance(legacy.get("planes"), dict) else DEFAULT_VARIABLES["planes"],
+                "defaults": legacy.get("defaults") if isinstance(legacy.get("defaults"), dict) else DEFAULT_VARIABLES["defaults"],
+            }
+
+            # Si el legacy traía llaves planas típicas, las mapeamos a defaults
+            for k in ("tasa_anual_default","enganche_default","rentas_deposito_default","comision_default","valor_default"):
+                if k in legacy and legacy[k] is not None:
+                    vars_db["defaults"][k] = legacy[k]
+
+            if "residuales_default" in legacy and legacy["residuales_default"] is not None:
+                vars_db["defaults"]["residuales_default"] = legacy["residuales_default"]
+
+            if "seguro_por_monto" in legacy and legacy["seguro_por_monto"] is not None:
+                vars_db["defaults"]["seguro_por_monto"] = legacy["seguro_por_monto"]
+
+            changed = True
+
+        # Asegurar que existan defaults/planes y llaves base
+        if not isinstance(vars_db.get("planes"), dict):
+            vars_db["planes"] = DEFAULT_VARIABLES["planes"]
+            changed = True
+        if not isinstance(vars_db.get("defaults"), dict):
+            vars_db["defaults"] = DEFAULT_VARIABLES["defaults"]
+            changed = True
+
+        # Completar faltantes en defaults
+        for k, v in DEFAULT_VARIABLES["defaults"].items():
+            if k not in vars_db["defaults"]:
+                vars_db["defaults"][k] = v
                 changed = True
 
-            if "variables" not in data:
-                data["variables"] = DEFAULT_VARIABLES
+        # Completar faltantes en planes (sin pisar los existentes)
+        for plan_name, cfg in DEFAULT_VARIABLES["planes"].items():
+            if plan_name not in vars_db["planes"] or not isinstance(vars_db["planes"][plan_name], dict):
+                vars_db["planes"][plan_name] = cfg
                 changed = True
+            else:
+                for k, v in cfg.items():
+                    if k not in vars_db["planes"][plan_name]:
+                        vars_db["planes"][plan_name][k] = v
+                        changed = True
 
-            # Asegurar todas las llaves de DEFAULT_VARIABLES
-            for k, v in DEFAULT_VARIABLES.items():
-                if k not in data["variables"]:
-                    data["variables"][k] = v
-                    changed = True
+        data["variables"] = vars_db
+        if changed:
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f, indent=4)
 
-            if changed:
-                f.seek(0)
-                f.truncate()
-                json.dump(data, f, indent=4)
-
-            VARIABLES = data["variables"]
+        VARIABLES = data["variables"]
 
 
 def ensure_template_available():
@@ -191,60 +283,74 @@ class CotizacionRequest(BaseModel):
     nombre_activo: str
     valor: float
 
-    # Si son None, se toma DEFAULT_VARIABLES
+    # NUEVO: Plan (opcional, default PREMIUM)
+    plan: Optional[str] = None
+
+    # Defaults globales (si None -> defaults)
     enganche: Optional[float] = None
     tasa_anual: Optional[float] = None
     comision: Optional[float] = None
     rentas_deposito: Optional[float] = None
+
+    # NUEVO: div_plan por request (si None -> del plan)
     div_plan: Optional[float] = None
-    div_plan_clasico: Optional[float] = None
+
+    # Gestoría por request (si None -> del plan)
     gestoria: Optional[float] = None
 
     # Seguro:
-    #   None o -1 -> calcular por tabla (seguro_por_monto)
-    #   0 -> gratis
-    #   >0 -> monto anual con IVA
-    seguro_anual: Optional[float] = -1
-    seguro_contado: bool = False  # True = contado / False = financiado
+    #   None o -1 -> calcular por tabla
+    #   0 -> sin seguro
+    #   >0 -> monto anual SIN IVA (como tu lógica actual)
+    seguro_anual: Optional[float] = None
 
-    # Nuevos campos
+    # Si no viene, se toma del plan
+    seguro_contado: Optional[bool] = None
+
     accesorios: Optional[float] = 0.0              # con IVA
     localizador_inicial: Optional[float] = None     # con IVA
     localizador_anual: Optional[float] = None       # con IVA
 
-    # Residuales opcionales por cotización
     residuales: Optional[List[ResidualItem]] = None
 
 # ------------------------------------------
 # ACTUALIZAR EJEMPLO DE SWAGGER DINÁMICAMENTE
 # ------------------------------------------
+def _vdef(key: str, fallback=None):
+    d = VARIABLES.get("defaults")
+    if isinstance(d, dict) and key in d:
+        return d[key]
+    # fallback legacy
+    if key in VARIABLES:
+        return VARIABLES[key]
+    if fallback is not None:
+        return fallback
+    return DEFAULT_VARIABLES.get(key)
+
 def refresh_cotizar_example():
-    """
-    Refresca el ejemplo mostrado en Swagger, usando los valores
-    actuales de VARIABLES.
-    """
+    D = get_defaults()
+    P = get_plan_cfg("PREMIUM")
+
     ejemplo = {
+        "plan": "PREMIUM",
         "nombre": "Cliente Ejemplo",
         "nombre_activo": "Camioneta Tiguan 2025",
         "valor": 0,
-        "enganche": VARIABLES["enganche_default"],
-        "tasa_anual": VARIABLES["tasa_anual_default"],
-        "comision": VARIABLES["comision_default"],
-        "rentas_deposito": VARIABLES["rentas_deposito_default"],
+        "enganche": D["enganche_default"],
+        "tasa_anual": D["tasa_anual_default"],
+        "comision": D["comision_default"],
+        "rentas_deposito": D["rentas_deposito_default"],
         "seguro_anual": -1,
-        "seguro_contado": False,
+        "seguro_contado": P.get("seguro_contado", False),
         "accesorios": 0,
-        "localizador_inicial": VARIABLES["localizador_inicial_default"],
-        "localizador_anual": VARIABLES["localizador_anual_default"],
-        "residuales": VARIABLES["residuales_default"],
-        "gestoria":0,
-        "div_plan":VARIABLES["div_plan"],
-        "div_plan_clasico":VARIABLES["div_plan_clasico"]
+        "localizador_inicial": P.get("localizador_inicial", 0),
+        "localizador_anual": P.get("localizador_anual", 0),
+        "residuales": D["residuales_default"],
+        "gestoria": P.get("gestoria", 0),
+        "div_plan": P.get("div_plan", 48),
     }
 
-    CotizacionRequest.model_config["json_schema_extra"] = {
-        "example": ejemplo
-    }
+    CotizacionRequest.model_config["json_schema_extra"] = {"example": ejemplo}
 
 
 # Ejecutar tras definir la clase
@@ -260,18 +366,30 @@ class ResidualConfig(BaseModel):
     residual: float
 
 
-class VariablesUpdate(BaseModel):
+class PlanUpdate(BaseModel):
+    div_plan: Optional[float] = None
+    gestoria: Optional[float] = None
+    seguro_anual: Optional[float] = None
+    seguro_contado: Optional[bool] = None
+    localizador_anual: Optional[float] = None
+    localizador_inicial: Optional[float] = None
+    segurotag: Optional[str] = None
+    GPStag: Optional[str] = None
+    plantag: Optional[str] = None
+    autobool: Optional[str] = None
+
+class DefaultsUpdate(BaseModel):
     tasa_anual_default: Optional[float] = None
     enganche_default: Optional[float] = None
     rentas_deposito_default: Optional[float] = None
     comision_default: Optional[float] = None
-    div_plan: Optional[float] = None
-    gestoria: Optional[float] = None
-    localizador_inicial_default: Optional[float] = None
-    localizador_anual_default: Optional[float] = None
+    valor_default: Optional[float] = None
     residuales_default: Optional[List[ResidualConfig]] = None
     seguro_por_monto: Optional[List[SeguroRango]] = None
-    div_plan_clasico: Optional[float] = None
+
+class VariablesUpdate(BaseModel):
+    planes: Optional[Dict[str, PlanUpdate]] = None
+    defaults: Optional[DefaultsUpdate] = None
 
 
 # -------------------------------------------------
@@ -290,7 +408,7 @@ def calcular_seguro_anual(valor_con_iva: float, entrada: Optional[float]) -> Dec
         v_con_iva = Decimal(str(valor_con_iva))
         valor_sin_iva = v_con_iva / Decimal("1.16")
 
-        rangos = VARIABLES.get("seguro_por_monto", DEFAULT_VARIABLES["seguro_por_monto"])
+        rangos = get_defaults().get("seguro_por_monto", DEFAULT_VARIABLES["defaults"]["seguro_por_monto"])
         pct = Decimal("0.025")
         for rango in rangos:
             max_v = Decimal(str(rango["max_valor_con_iva"]))
@@ -338,11 +456,14 @@ def calcular_pago_mensual(
     """
 
     valor_sin_iva = Decimal(valor) / Decimal("1.16")
+    acc_sin_iva = Decimal(str(accesorios_con_iva or 0)) / Decimal("1.16")
+    total_sin_iva = valor_sin_iva + acc_sin_iva
+    enganche_pct = Decimal(str(enganche)) / Decimal("100")
     r = Decimal(tasa_anual) / Decimal(1200)
     n = Decimal(plazo_meses)
 
     # Valor presente del activo (sin IVA)
-    pv = valor_sin_iva * (1 - Decimal(enganche) / 100)
+    pv = valor_sin_iva * (1 - enganche_pct)
     fv = valor_sin_iva * (Decimal(valor_residual) / 100)
 
     # ------------------------- PAGO DE RENTA PRINCIPAL -------------------------
@@ -375,7 +496,7 @@ def calcular_pago_mensual(
     # ------------------------- ACCESORIOS -------------------------
     # accesorios_con_iva se financia sin residual, valor presente SIN IVA
     if accesorios_con_iva and accesorios_con_iva > 0:
-        pv_acc_sin_iva = Decimal(str(accesorios_con_iva)) / Decimal("1.16")
+        pv_acc_sin_iva = (Decimal(str(accesorios_con_iva)) / Decimal("1.16")) * (1 - enganche_pct)
         if r == 0:
             pago_accesorios = -pv_acc_sin_iva / n
         else:
@@ -421,8 +542,9 @@ def calcular_pago_mensual(
     monto_deposito = Decimal(rentas_deposito) * total_mensual_con_iva
     primera_mensualidad = subtotal_mensual
 
-    monto_enganche = valor_sin_iva * Decimal(enganche / 100)
-    monto_comision = pv * Decimal(comision / 100)
+    monto_enganche = total_sin_iva * enganche_pct
+    pv_total = total_sin_iva * (1 - enganche_pct)   # activo+accesorios neto de enganche
+    monto_comision = pv_total * (Decimal(str(comision)) / Decimal("100"))
 
     subtotal_inicial = (
         monto_enganche
@@ -523,98 +645,101 @@ def convertir_pdf(path_word, output_dir):
 # -------------------------------------------------
 @app.post("/cotizar")
 def cotizar(data: CotizacionRequest, request: Request):
-    # Cargar variables actuales
-    div_plan_default = VARIABLES.get("div_plan", DEFAULT_VARIABLES["div_plan"])
-    div_plan_clasico = VARIABLES.get("div_plan_clasico", DEFAULT_VARIABLES["div_plan_clasico"])
-    gestoria = VARIABLES.get("gestoria", DEFAULT_VARIABLES["gestoria"])
+    D = get_defaults()
+    plan_cfg = get_plan_cfg(data.plan)
+    plan = _plan_key(data.plan)
 
-    # Resolver defaults dinámicos
-    enganche = data.enganche if data.enganche is not None else VARIABLES["enganche_default"]
-    tasa_anual = data.tasa_anual if data.tasa_anual is not None else VARIABLES["tasa_anual_default"]
-    comision = data.comision if data.comision is not None else VARIABLES["comision_default"]
-    rentas_deposito = data.rentas_deposito if data.rentas_deposito is not None else VARIABLES["rentas_deposito_default"]
+    # Defaults globales
+    enganche = data.enganche if data.enganche is not None else float(D["enganche_default"])
+    tasa_anual = data.tasa_anual if data.tasa_anual is not None else float(D["tasa_anual_default"])
+    comision = data.comision if data.comision is not None else float(D["comision_default"])
+    rentas_deposito = data.rentas_deposito if data.rentas_deposito is not None else float(D["rentas_deposito_default"])
 
-    accesorios = data.accesorios or 0.0
-    loc_ini = data.localizador_inicial if data.localizador_inicial is not None else VARIABLES["localizador_inicial_default"]
-    loc_anual = data.localizador_anual if data.localizador_anual is not None else VARIABLES["localizador_anual_default"]
+    accesorios = float(data.accesorios or 0.0)
+
+    # Plan-based (si request no manda)
+    loc_ini = data.localizador_inicial if data.localizador_inicial is not None else float(plan_cfg.get("localizador_inicial", 0) or 0)
+    loc_anual = data.localizador_anual if data.localizador_anual is not None else float(plan_cfg.get("localizador_anual", 0) or 0)
+
+    gestoria_effective = data.gestoria if data.gestoria is not None else float(plan_cfg.get("gestoria", 0) or 0)
+
+    # div_plan: request > plan
+    div_plan_effective = data.div_plan if data.div_plan is not None else float(plan_cfg.get("div_plan", 48))
+
+    # Seguro: request > plan
+    seguro_in = data.seguro_anual
+    if seguro_in is None:
+        seguro_in = plan_cfg.get("seguro_anual", -1)
+
+    seguro_contado_flag = data.seguro_contado if data.seguro_contado is not None else bool(plan_cfg.get("seguro_contado", False))
+
+    # Flags (según tus reglas nuevas)
+    segbool = "SI" if (seguro_in != 0) else "NO"
+    gpsbool = "NO" if ((loc_ini or 0) == 0 and (loc_anual or 0) == 0) else "SI"
+    gestbool = "NO" if (gestoria_effective or 0) == 0 else "SI"
+
+    # Tags por plan
+    plantag = plan_cfg.get("plantag", "")
+    segurotag = plan_cfg.get("segurotag", "")
+    GPStag = plan_cfg.get("GPStag", "")
+    autobool = plan_cfg.get("autobool", "")
 
     nombre_upper = data.nombre.upper()
     activo_upper = data.nombre_activo.upper()
 
-    # Folio único consistente para JSON + Word + PDF
     folio = datetime.now(TIMEZONE).strftime("%Y%m%d%H%M%S")
 
-    # Escenarios de plazos y residuales
-    default_residuales = VARIABLES.get("residuales_default", DEFAULT_VARIABLES["residuales_default"])
-
+    # Residuales
+    default_residuales = D.get("residuales_default", DEFAULT_VARIABLES["defaults"]["residuales_default"])
     if data.residuales and len(data.residuales) > 0:
-        # Convertimos lista → dict para poder reemplazar solo los plazos enviados
         enviados = {r.plazo: r.residual for r in data.residuales}
-
-        # Completamos usando defaults cuando el usuario no manda algo
         escenarios = []
         for item in default_residuales:
             plazo = item["plazo"]
             residual = enviados.get(plazo, item["residual"])
             escenarios.append({"plazo": plazo, "residual": residual})
     else:
-        # Si no envían nada, usar todos los residuales defaults
         escenarios = default_residuales
 
-    # Seguro anual (sin IVA)
-    seguro_anual = calcular_seguro_anual(data.valor, data.seguro_anual)
-    seguro_contado_flag = data.seguro_contado
-    # -------------------------
-    # Nuevas variables de negocio (para plantillas)
-    # 1) Si el seguro no es financiado -> seguro_contado_flag = True => Plan Clásico y usa div_plan_clasico
-    #    Si el seguro es financiado -> Premium y usa div_plan (del request si viene, si no el default)
-    plan = "CLASICO" if seguro_contado_flag else "PREMIUM"
-    plantag = "Gastos de Administración" if seguro_contado_flag else "Membresía Plan Premium"
-    div_plan_default = float(VARIABLES.get("div_plan", DEFAULT_VARIABLES["div_plan"]))
-    div_plan_clasico = float(VARIABLES.get("div_plan_clasico", DEFAULT_VARIABLES["div_plan_clasico"]))
-    if seguro_contado_flag:
-        div_plan_effective = (
-            data.div_plan_clasico
-            if data.div_plan_clasico is not None
-            else div_plan_clasico
-        )
-        div_plan_usado = "div_plan_clasico"
-    else:
-        div_plan_effective = (
-            data.div_plan
-            if data.div_plan is not None
-            else div_plan_default
-        )
-        div_plan_usado = "div_plan"
-
-    # Flags para plantilla
-    segbool = "NO" if seguro_contado_flag else "SI"
-    gpsbool = "SI" if ((loc_ini or 0) > 0 or (loc_anual or 0) > 0) else "NO"
-
-    # ✅ Gestoría efectiva: si el request trae gestoria úsala; si no, usa la variable default; si no existe, 0
-    gestoria_effective = (
-        data.gestoria
-        if (hasattr(data, "gestoria") and data.gestoria is not None)
-        else VARIABLES.get("gestoria", DEFAULT_VARIABLES.get("gestoria", 0))
-    )
-    gestoria_effective = float(gestoria_effective or 0.0)
-    # Flags para plantilla (usar effective)
-    gestbool = "SI" if gestoria_effective > 0 else "NO"
+    # Seguro anual (sin IVA, lógica existente)
+    seguro_anual = calcular_seguro_anual(data.valor, seguro_in)
 
     valores_para_doc = {
+        # Identidad
         "nombre": nombre_upper,
         "descripcion": activo_upper,
+        "fecha": datetime.now(TIMEZONE).strftime("%d/%m/%Y"),
+        "folio": folio,
+
+        # Importes base
         "precio": formato_miles(data.valor),
         "accesorios": formato_miles(accesorios),
         "ptotal": formato_miles(data.valor + accesorios),
-        "fecha": datetime.now(TIMEZONE).strftime("%d/%m/%Y"),
+
+        # Plan
         "plan": plan,
-        "plantag":plantag,
+        "plantag": plantag,
+        "autobool": autobool,
+
+        # División / estructura
         "div_plan": div_plan_effective,
+
+        # Seguro
+        "segurotag": segurotag,
         "segbool": segbool,
+        "seguro_anual": formato_miles(
+            float((seguro_anual * Decimal("1.16")).quantize(Decimal("0.01")))
+        ),
+
+        # Gestoría
+        "gestoria": formato_miles(gestoria_effective),
         "gestbool": gestbool,
+
+        # GPS / Localizador
+        "GPStag": GPStag,
         "gpsbool": gpsbool,
-        "folio": folio,
+        "localizador_inicial": formato_miles(loc_ini),
+        "localizador_anual": formato_miles(loc_anual),
     }
 
     detalle = []
@@ -694,20 +819,31 @@ def cotizar(data: CotizacionRequest, request: Request):
             "accesorios": accesorios,
             "comision": comision,
             "enganche": enganche,
+
             "localizador_anual": loc_anual,
             "localizador_inicial": loc_ini,
+
             "rentas_deposito": rentas_deposito,
-            "residuales": escenarios,   # ← Los plazos+residual realmente utilizados
+            "residuales": escenarios,
+
             "seguro_anual": float((seguro_anual * Decimal("1.16")).quantize(Decimal("0.01"))),
             "seguro_contado": seguro_contado_flag,
+
             "tasa_anual": tasa_anual,
-            "div_plan_utilizado": div_plan_usado,
-            "div_plan_valor_utilizado": div_plan_effective,
-            "gestoria": gestoria,
+
+            "div_plan": div_plan_effective,
+            "gestoria": gestoria_effective,
+
             "plan": plan,
+
+            "segurotag": segurotag,
+            "GPStag": GPStag,
+            "plantag": plantag,
+            "autobool": autobool,
+
             "segbool": segbool,
             "gestbool": gestbool,
-            "gpsbool": gpsbool,
+            "gpsbool": gpsbool
         }
     }
 
@@ -841,56 +977,58 @@ def update_variables(payload: VariablesUpdate, x_api_key: str = Header(None)):
     if x_api_key != API_ADMIN_KEY:
         raise HTTPException(status_code=401, detail="No autorizado")
 
-    # Convertir Pydantic → dict
     data_dict = payload.model_dump(exclude_unset=True)
 
-    # -------------------------------------------
-    # 1) Residuales
-    # -------------------------------------------
-    if "residuales_default" in data_dict and data_dict["residuales_default"] is not None:
-        data_dict["residuales_default"] = [
-            {"plazo": r["plazo"], "residual": r["residual"]}
-            for r in data_dict["residuales_default"]
-        ]
+    # asegurar estructura viva
+    if "planes" not in VARIABLES or not isinstance(VARIABLES.get("planes"), dict):
+        VARIABLES["planes"] = DEFAULT_VARIABLES["planes"].copy()
+    if "defaults" not in VARIABLES or not isinstance(VARIABLES.get("defaults"), dict):
+        VARIABLES["defaults"] = DEFAULT_VARIABLES["defaults"].copy()
 
-    # -------------------------------------------
-    # 2) Seguro por monto
-    # -------------------------------------------
-    if "seguro_por_monto" in data_dict and data_dict["seguro_por_monto"] is not None:
-        data_dict["seguro_por_monto"] = [
-            {
-                "max_valor_con_iva": s["max_valor_con_iva"],
-                "porcentaje": s["porcentaje"]
-            }
-            for s in data_dict["seguro_por_monto"]
-        ]
+    # -------- defaults --------
+    defaults_in = data_dict.get("defaults")
+    if isinstance(defaults_in, dict):
+        if "residuales_default" in defaults_in and defaults_in["residuales_default"] is not None:
+            defaults_in["residuales_default"] = [
+                {"plazo": r["plazo"], "residual": r["residual"]}
+                for r in defaults_in["residuales_default"]
+            ]
 
-    # -------------------------------------------
-    # 3) Otros campos simples → se actualizan directo
-    # -------------------------------------------
-    for k, v in data_dict.items():
-        VARIABLES[k] = v
+        if "seguro_por_monto" in defaults_in and defaults_in["seguro_por_monto"] is not None:
+            defaults_in["seguro_por_monto"] = [
+                {"max_valor_con_iva": s["max_valor_con_iva"], "porcentaje": s["porcentaje"]}
+                for s in defaults_in["seguro_por_monto"]
+            ]
 
-    # -------------------------------------------
-    # 4) Persistir en db.json
-    # -------------------------------------------
+        for k, v in defaults_in.items():
+            VARIABLES["defaults"][k] = v
+
+    # -------- planes --------
+    planes_in = data_dict.get("planes")
+    if isinstance(planes_in, dict):
+        for plan_name, plan_updates in planes_in.items():
+            pkey = (str(plan_name) or "").strip().upper()
+            if not pkey:
+                continue
+
+            if pkey not in VARIABLES["planes"] or not isinstance(VARIABLES["planes"].get(pkey), dict):
+                VARIABLES["planes"][pkey] = {}
+
+            for k, v in (plan_updates or {}).items():
+                VARIABLES["planes"][pkey][k] = v
+
+    # persistir db.json (variables completo)
     with open(DB_PATH, "r+") as f:
         data = json.load(f)
-
-        if "variables" not in data:
+        if "variables" not in data or not isinstance(data["variables"], dict):
             data["variables"] = {}
-
-        for k, v in VARIABLES.items():
-            data["variables"][k] = v
-
+        data["variables"] = VARIABLES
         f.seek(0)
         f.truncate()
         json.dump(data, f, indent=4)
 
     refresh_cotizar_example()
-
     return {"status": "ok", "variables": VARIABLES}
-
 
 # -------------------------------------------------
 # /sync/historico  (Power Automate -> Postgres)

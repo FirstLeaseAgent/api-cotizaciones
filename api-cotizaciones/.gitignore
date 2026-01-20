@@ -18,10 +18,6 @@ venv/
 .env
 .env.*
 
-# -----------------------------
-# Base de datos local (NO subir a producción)
-# -----------------------------
-db.json
 
 # -----------------------------
 # Archivos generados por la API
