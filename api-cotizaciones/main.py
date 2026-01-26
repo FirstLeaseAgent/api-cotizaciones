@@ -11,7 +11,7 @@ from psycopg2.extras import execute_values, Json
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from typing import Dict
 from decimal import Decimal, getcontext
 from docx import Document
@@ -1134,6 +1134,25 @@ def _get_cartera_conn():
         raise HTTPException(status_code=500, detail="Missing CARTERA_DATABASE_URL")
     return psycopg2.connect(CARTERA_DATABASE_URL)
 
+def _norm_str(x) -> Optional[str]:
+    if x is None:
+        return None
+    s = str(x).strip()
+    return s or None
+
+
+def _norm_contrato(x) -> Optional[str]:
+    """
+    Normaliza el contrato para dedupe:
+    - strip
+    - deja tal cual el formato, sin inventar guiones.
+    """
+    s = _norm_str(x)
+    if not s:
+        return None
+    return s
+
+
 @app.post("/sync/historico")
 def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)):
     # Seguridad: clave independiente a API_ADMIN_KEY
@@ -1145,15 +1164,26 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
     cartera_rows = payload.tables.cartera or []
     activos_rows = payload.tables.activos or []
 
-    # -------- UPSERT: cartera_historica --------
-    cartera_values = []
-    for r in cartera_rows:
-        contrato = _get_any(r, "NO. CONTRATO", "NO CONTRATO", "NO_CONTRATO")
-        if not contrato:
-            continue
-        contrato = str(contrato).strip()
+    # ----------------------------
+    # 1) Armar tuples (cartera)
+    # ----------------------------
+    cartera_map: Dict[str, Tuple] = {}
+    cartera_skipped = 0
 
-        cartera_values.append((
+    for r in cartera_rows:
+        contrato = _get_any(r, "NO. CONTRATO", "NO CONTRATO", "NO_CONTRATO", "NO_x002e_ CONTRATO")
+        contrato = _norm_contrato(contrato)
+        if not contrato:
+            cartera_skipped += 1
+            continue
+
+        # Normalizados / numéricos
+        flujos_inicio_mes = _to_number(_get_any(r, "FLUJOS FUTUROS INICIO MES"))
+
+        # FONDEADOR: solo raw (no columna)
+        # Si el Excel manda FONDEADOR, queda guardado en raw automáticamente porque raw=Json(r)
+
+        cartera_map[contrato] = (
             contrato,
             (_get_any(r, "CLIENTE") or None),
             (_get_any(r, "TIPO DE ACTIVO") or None),
@@ -1163,20 +1193,31 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
             _to_number(_get_any(r, "TASA DE INTERES", "TASA DE INTERÉS")),
             _to_number(_get_any(r, "SALDO INSOLUTO INICIO MES")),
             _to_number(_get_any(r, "PAGOS HISTORICOS C/IVA", "PAGOS HISTÓRICOS C/IVA")),
+            flujos_inicio_mes,  # <-- columna normalizada
             Json(r),
-        ))
+        )
 
-    # -------- UPSERT: activos_historico --------
-    activos_values = []
+    cartera_values = list(cartera_map.values())
+    cartera_deduped = len(cartera_rows) - cartera_skipped - len(cartera_values)
+
+    # ----------------------------
+    # 2) Armar tuples (activos)
+    # ----------------------------
+    activos_map: Dict[str, Tuple] = {}
+    activos_skipped = 0
+
     for r in activos_rows:
-        ident = _get_any(r, "IDENTIFICADOR")
-        contrato = _get_any(r, "NO. CONTRATO", "NO CONTRATO", "NO_CONTRATO")
-        if not ident or not contrato:
-            continue
-        ident = str(ident).strip()
-        contrato = str(contrato).strip()
+        ident = _get_any(r, "IDENTIFICADOR", "identificador")
+        contrato = _get_any(r, "NO. CONTRATO", "NO CONTRATO", "NO_CONTRATO", "NO_x002e_ CONTRATO")
 
-        activos_values.append((
+        ident = _norm_str(ident)
+        contrato = _norm_contrato(contrato)
+
+        if not ident or not contrato:
+            activos_skipped += 1
+            continue
+
+        activos_map[ident] = (
             ident,
             contrato,
             (_get_any(r, "CONTRATO INTERNO") or None),
@@ -1192,7 +1233,10 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
             (_to_date_str(_get_any(r, "INICIO VIGENCIA POLIZA", "INICIO VIGENCIA PÓLIZA"))),
             (_to_date_str(_get_any(r, "FIN VIGENCIA POLIZA", "FIN VIGENCIA PÓLIZA"))),
             Json(r),
-        ))
+        )
+
+    activos_values = list(activos_map.values())
+    activos_deduped = len(activos_rows) - activos_skipped - len(activos_values)
 
     conn = _get_cartera_conn()
     try:
@@ -1204,6 +1248,7 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
                           (no_contrato, cliente, tipo_de_activo, plazo_del_arrendamiento,
                            fecha_de_inicio, fecha_de_vencimiento,
                            tasa_de_interes, saldo_insoluto_inicio_mes, pagos_historicos_c_iva,
+                           flujos_futuros_inicio_mes,
                            raw)
                         values %s
                         on conflict (no_contrato) do update set
@@ -1215,6 +1260,7 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
                           tasa_de_interes = excluded.tasa_de_interes,
                           saldo_insoluto_inicio_mes = excluded.saldo_insoluto_inicio_mes,
                           pagos_historicos_c_iva = excluded.pagos_historicos_c_iva,
+                          flujos_futuros_inicio_mes = excluded.flujos_futuros_inicio_mes,
                           raw = excluded.raw,
                           updated_at = now();
                     """, cartera_values)
@@ -1248,8 +1294,13 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
 
         return {
             "cartera_received": len(cartera_rows),
+            "cartera_skipped": cartera_skipped,
+            "cartera_deduped": cartera_deduped,
             "cartera_upserted": len(cartera_values),
+
             "activos_received": len(activos_rows),
+            "activos_skipped": activos_skipped,
+            "activos_deduped": activos_deduped,
             "activos_upserted": len(activos_values),
         }
     finally:
