@@ -15,7 +15,7 @@ from typing import Optional, List, Tuple
 from typing import Dict
 from decimal import Decimal, getcontext
 from docx import Document
-from datetime import datetime
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 import json
 import uuid
@@ -1330,12 +1330,71 @@ def _rows_to_dicts(cur):
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+_MONTHS_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9,
+    "octubre": 10, "noviembre": 11, "diciembre": 12,
+}
+
+def _month_range_from_q(q: str) -> tuple[date, date]:
+    """
+    Acepta:
+      - 'febrero 2026'
+      - 'Feb 2026'
+      - '2026-02'
+      - '02/2026' o '2/2026'
+    Regresa (inicio_mes, inicio_mes_siguiente)
+    """
+    if not q or not q.strip():
+        raise HTTPException(status_code=400, detail="Este scope requiere q con mes y año. Ej: 'febrero 2026' o '2026-02'.")
+
+    s = q.strip().lower()
+
+    # 2026-02
+    m = re.match(r"^\s*(\d{4})-(\d{1,2})\s*$", s)
+    if m:
+        y = int(m.group(1)); mm = int(m.group(2))
+
+    # 02/2026
+    elif re.match(r"^\s*\d{1,2}/\d{4}\s*$", s):
+        mm, y = s.split("/")
+        y = int(y); mm = int(mm)
+
+    # 'febrero 2026' o 'feb 2026'
+    else:
+        parts = re.split(r"\s+", s)
+        if len(parts) < 2:
+            raise HTTPException(status_code=400, detail="Formato inválido. Usa 'febrero 2026' o '2026-02'.")
+        mes_txt = parts[0][:9]  # tolera abreviaciones
+        y = int(parts[1])
+
+        # match por prefijo (feb, febr, febrero)
+        mm = None
+        for k, v in _MONTHS_ES.items():
+            if k.startswith(mes_txt) or mes_txt.startswith(k[:3]):
+                if mes_txt.startswith(k[:3]):
+                    mm = v
+                    break
+        if mm is None:
+            raise HTTPException(status_code=400, detail="Mes inválido. Ej: 'febrero 2026'.")
+
+    if mm < 1 or mm > 12:
+        raise HTTPException(status_code=400, detail="Mes inválido (1-12).")
+
+    start = date(y, mm, 1)
+    # siguiente mes
+    if mm == 12:
+        end = date(y + 1, 1, 1)
+    else:
+        end = date(y, mm + 1, 1)
+    return start, end
+
 class QueryInclude(BaseModel):
     contratos: bool = False
     activos: bool = False
 
 class CarteraQuery(BaseModel):
-    scope: str = "cliente"  # cliente | contrato | cartera | activo
+    scope: str = "cliente"  # cliente | contrato | cartera | activo | fondeador
     q: Optional[str] = None
     no_contrato: Optional[str] = None
     metrics: List[str] = []
@@ -1407,6 +1466,48 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
     elif scope == "cartera":
         where_cartera = "1=1"
         params_cartera = []
+    elif scope == "vencimientos_contrato":
+        # q requerido: "febrero 2026" o "2026-02"
+        start, end = _month_range_from_q(q)
+
+        # filtro sobre cartera_historica
+        where_cartera = "c.fecha_de_vencimiento >= %s AND c.fecha_de_vencimiento < %s"
+        params_cartera = [start, end]
+
+    elif scope == "vencimientos_seguro":
+        # q requerido: "marzo 2026" o "2026-03"
+        start, end = _month_range_from_q(q)
+
+        # aquí NO usamos where_cartera: vamos a listar activos por fin_vigencia_poliza
+        where_activos = "a.fin_vigencia_poliza >= %s AND a.fin_vigencia_poliza < %s"
+        params_activos = [start, end]
+
+    elif scope == "fondeador":
+        # Si viene q => filtra por ese fondeador (match parcial)
+        # Si NO viene q => solo “contratos que tienen fondeador”
+        if q:
+            where_cartera = "NULLIF(BTRIM(c.fondeador), '') IS NOT NULL AND c.fondeador ILIKE %s"
+            params_cartera = [f"%{q}%"]
+        else:
+            where_cartera = "NULLIF(BTRIM(c.fondeador), '') IS NOT NULL"
+            params_cartera = []
+
+    # ---------------------------------------------------------
+    # --- FONDEADOR SCOPE ---
+    #
+    # Si NO viene q -> “contratos que tienen fondeador”
+    # Si viene q -> “contratos fondeados por <q>”
+    # ---------------------------------------------------------
+    elif scope == "fondeador":
+        # condición SQL: fondeador no nulo y no vacío
+        fondeador_has_value_sql = "NULLIF(BTRIM(c.fondeador), '') IS NOT NULL"
+
+        if q:
+            where_cartera = f"({fondeador_has_value_sql} AND c.fondeador ILIKE %s)"
+            params_cartera = [f"%{q}%"]
+        else:
+            where_cartera = f"({fondeador_has_value_sql})"
+            params_cartera = []
 
     elif scope == "activo":
         if not q:
@@ -1609,6 +1710,25 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                             "min_vencimiento": r[2].isoformat() if r and r[2] else None,
                             "max_vencimiento": r[3].isoformat() if r and r[3] else None,
                         }
+                # --- FONDEADOR: “Cuántos contratos tienen fondeador” ---
+                elif m == "conteo_contratos_con_fondeador":
+                    cur.execute("""
+                        select count(distinct c.no_contrato) as conteo_con_fondeador
+                        from public.cartera_historica c
+                        where NULLIF(BTRIM(c.fondeador), '') IS NOT NULL;
+                    """)
+                    metrics_out["conteo_contratos_con_fondeador"] = int(cur.fetchone()[0] or 0)
+
+                # --- FONDEADOR: “Qué fondeadores existen” ---
+                elif m == "lista_fondeadores":
+                    cur.execute("""
+                        select distinct BTRIM(c.fondeador) as fondeador
+                        from public.cartera_historica c
+                        where NULLIF(BTRIM(c.fondeador), '') IS NOT NULL
+                        order by fondeador asc
+                        limit 200;
+                    """)
+                    metrics_out["lista_fondeadores"] = [r[0] for r in cur.fetchall() if r and r[0]]
 
                 elif m == "desde_cuando_cliente":
                     cur.execute(f"""
@@ -1628,7 +1748,7 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
             if payload.include and payload.include.contratos:
                 cur.execute(f"""
                     select
-                      c.no_contrato, c.cliente, c.tipo_de_activo,
+                      c.no_contrato, c.cliente, c.tipo_de_activo, c.fondeador,
                       c.plazo_del_arrendamiento, c.fecha_de_inicio, c.fecha_de_vencimiento,
                       c.saldo_insoluto_inicio_mes, c.pagos_historicos_c_iva,
                       c.raw->>'FLUJO MENSUAL S/IVA' as flujo_mensual_s_iva,
@@ -1643,12 +1763,12 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
             # Mostrar activos cuando:
             # - scope sea "activo" (siempre regresa activos)
             # - o include.activos = true
-            want_activos = (scope == "activo") or (payload.include and payload.include.activos)
+            want_activos = (scope in ("activo", "vencimientos_seguro")) or (payload.include and payload.include.activos)
 
             if want_activos:
-                if scope == "activo":
-                    if not where_activos or not params_activos:
-                        raise HTTPException(status_code=400, detail="scope=activo requires q")
+                if scope in ("activo", "vencimientos_seguro"):
+                    if where_activos is None or params_activos is None:
+                        raise HTTPException(status_code=400, detail="Este scope requiere q para filtrar seguros/activos")
                     cur.execute(f"""
                         select
                             a.identificador, a.no_contrato, a.cliente, a.tipo_de_activo, a.descripcion,
@@ -1656,7 +1776,7 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                             a.inicio_vigencia_poliza, a.fin_vigencia_poliza
                         from public.activos_historico a
                         where {where_activos}
-                        order by a.no_contrato asc, a.identificador asc
+                        order by a.fin_vigencia_poliza asc, a.no_contrato asc, a.identificador asc
                         limit %s;
                     """, params_activos + [limit])
                     out_rows["activos"] = _rows_to_dicts(cur)
@@ -1700,7 +1820,7 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                                or numero_de_serie ilike %s
                                or numero_de_motor ilike %s
                                or poliza ilike %s
-                            order by updated_at desc
+                            order by a.updated_at desc
                             limit %s;
                         """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit))
                         out_rows["activos"] = _rows_to_dicts(cur)
