@@ -7,8 +7,8 @@ import unicodedata
 from typing import Any, Dict
 import psycopg2
 from psycopg2.extras import execute_values, Json
-
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header
+import time
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Header,Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List, Tuple
@@ -303,6 +303,71 @@ def ensure_template_available():
 
     save_db(data)
 
+# --- Seguridad: API Key para endpoints admin ---
+
+
+def _require_admin_key(request: Request):
+    expected = os.getenv("API_ADMIN_KEY", "").strip()
+    provided = (request.headers.get("x-admin-key") or "").strip()
+
+    # Si no configuraste ADMIN_KEY en el server, mejor bloquear para no exponerlo accidentalmente
+    if not expected:
+        raise HTTPException(status_code=500, detail="ADMIN_KEY no configurada en el servidor")
+
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def cleanup_outputs(days: int = 15, output_dir: Optional[str] = None) -> Dict:
+    """
+    Borra archivos en output_dir con mtime (última modificación) más viejo que N días.
+    Solo borra .pdf y .docx (para no tocar otros archivos por error).
+    """
+    output_dir = output_dir or OUTPUT_DIR
+    deleted = 0
+    kept = 0
+    errors = 0
+    deleted_files = []
+
+    if not os.path.isdir(output_dir):
+        return {
+            "deleted": 0, "kept": 0, "errors": 0,
+            "note": "output_dir no existe",
+            "output_dir": output_dir,
+            "days": days
+        }
+
+    cutoff = time.time() - (days * 24 * 60 * 60)
+    allowed_ext = (".pdf", ".docx")
+
+    for name in os.listdir(output_dir):
+        if not name.lower().endswith(allowed_ext):
+            continue
+
+        path = os.path.join(output_dir, name)
+        if not os.path.isfile(path):
+            continue
+
+        try:
+            mtime = os.path.getmtime(path)
+            if mtime < cutoff:
+                os.remove(path)
+                deleted += 1
+                deleted_files.append(name)
+            else:
+                kept += 1
+        except Exception:
+            errors += 1
+
+    return {
+        "deleted": deleted,
+        "kept": kept,
+        "errors": errors,
+        "days": days,
+        "output_dir": output_dir,
+        "deleted_files": deleted_files[:50],  # evita respuestas enormes
+        "deleted_files_truncated": max(0, len(deleted_files) - 50),
+    }
 
 # -------------------------------------------------
 # MODELOS Pydantic
@@ -1138,6 +1203,26 @@ def update_variables(payload: VariablesUpdate, x_api_key: str = Header(None)):
 
     refresh_cotizar_example()
     return {"status": "ok", "variables": VARIABLES}
+
+
+# =========================
+# Endpoint admin: limpieza
+# =========================
+@app.post("/admin/cleanup_outputs")
+def admin_cleanup_outputs(
+    request: Request,
+    days: int = Query(15, ge=1, le=365),
+    x_admin_key: str = Header(default="", alias="X-ADMIN-KEY"),
+):
+    expected = (os.getenv("API_ADMIN_KEY") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=500, detail="API_ADMIN_KEY no configurada en el servidor")
+
+    if (x_admin_key or "").strip() != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    result = cleanup_outputs(days=days)
+    return {"status": "ok", **result}
 
 # -------------------------------------------------
 # /sync/historico  (Power Automate -> Postgres)
