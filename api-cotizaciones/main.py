@@ -83,7 +83,7 @@ DEFAULT_VARIABLES = {
             "seguro_contado": False,
             "segurotag": "Seguro con Deducibles 5 y 10%",
             "GPStag": "GPS con Plataforma de Rastreo",
-            "plantag": "Membresia Plan Plus",
+            "plantag": "Membresía Plan Plus",
             "incluye_asistencia":False,
             "incluye_gestoria": True,
             "incluye_sustituto": False,
@@ -95,7 +95,7 @@ DEFAULT_VARIABLES = {
             "seguro_contado": False,
             "segurotag": "Seguro Premium Deducibles 3 y 5%",
             "GPStag": "GPS con Plataforma de Rastreo",
-            "plantag": "Membresia Plan Premium",
+            "plantag": "Membresía Plan Premium",
             "incluye_asistencia":True,
             "incluye_gestoria": True,
             "incluye_sustituto": True,
@@ -130,6 +130,15 @@ DEFAULT_VARIABLES = {
     },
 }
 
+
+def load_db():
+    with open(DB_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_db(data: dict):
+    with open(DB_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
 VARIABLES = DEFAULT_VARIABLES.copy()
 
 def _plan_key(plan: Optional[str]) -> str:
@@ -157,89 +166,93 @@ GITHUB_RAW_URL = (
 )
 TEMPLATE_NAME = "Plantilla_Cotizacion.docx"
 
-
+LEGACY_PLAN_KEYS = {"gestoria", "localizador_anual", "localizador_inicial", "autobool"}
 def ensure_db_and_variables():
-    """
-    Asegura que db.json exista y que variables tenga la forma:
-      variables: { "planes": {...}, "defaults": {...} }
-    """
     global VARIABLES
 
-    if not os.path.exists(DB_PATH) or os.stat(DB_PATH).st_size == 0:
-        with open(DB_PATH, "w") as f:
-            json.dump({"plantillas": [], "variables": DEFAULT_VARIABLES}, f, indent=4)
+    # Si no existe o está vacío, crearlo en UTF-8
+    if (not os.path.exists(DB_PATH)) or os.stat(DB_PATH).st_size == 0:
+        data = {"plantillas": [], "variables": DEFAULT_VARIABLES}
+        save_db(data)
         VARIABLES = DEFAULT_VARIABLES.copy()
         return
 
-    with open(DB_PATH, "r+") as f:
-        data = json.load(f)
-        changed = False
+    data = load_db()
+    changed = False
 
-        if "plantillas" not in data:
-            data["plantillas"] = []
+    if "plantillas" not in data:
+        data["plantillas"] = []
+        changed = True
+
+    if "variables" not in data or not isinstance(data["variables"], dict):
+        data["variables"] = DEFAULT_VARIABLES
+        changed = True
+
+    vars_db = data["variables"]
+
+    # --- Migración: si venía estructura vieja/plana, crear defaults/planes ---
+    if "defaults" not in vars_db or "planes" not in vars_db:
+        legacy = vars_db.copy()
+
+        vars_db = {
+            "planes": legacy.get("planes") if isinstance(legacy.get("planes"), dict) else DEFAULT_VARIABLES["planes"],
+            "defaults": legacy.get("defaults") if isinstance(legacy.get("defaults"), dict) else DEFAULT_VARIABLES["defaults"],
+        }
+
+        for k in ("tasa_anual_default", "enganche_default", "rentas_deposito_default", "comision_default", "valor_default"):
+            if k in legacy and legacy[k] is not None:
+                vars_db["defaults"][k] = legacy[k]
+
+        if "residuales_default" in legacy and legacy["residuales_default"] is not None:
+            vars_db["defaults"]["residuales_default"] = legacy["residuales_default"]
+
+        if "seguro_por_monto" in legacy and legacy["seguro_por_monto"] is not None:
+            vars_db["defaults"]["seguro_por_monto"] = legacy["seguro_por_monto"]
+
+        changed = True
+
+    # Asegurar que existan defaults/planes y llaves base
+    if not isinstance(vars_db.get("planes"), dict):
+        vars_db["planes"] = DEFAULT_VARIABLES["planes"]
+        changed = True
+
+    if not isinstance(vars_db.get("defaults"), dict):
+        vars_db["defaults"] = DEFAULT_VARIABLES["defaults"]
+        changed = True
+
+    # Completar faltantes en defaults
+    for k, v in DEFAULT_VARIABLES["defaults"].items():
+        if k not in vars_db["defaults"]:
+            vars_db["defaults"][k] = v
             changed = True
 
-        if "variables" not in data or not isinstance(data["variables"], dict):
-            data["variables"] = DEFAULT_VARIABLES
+    # Completar faltantes en planes (sin pisar los existentes)
+    for plan_name, cfg in DEFAULT_VARIABLES["planes"].items():
+        if plan_name not in vars_db["planes"] or not isinstance(vars_db["planes"][plan_name], dict):
+            vars_db["planes"][plan_name] = cfg
             changed = True
+        else:
+            for k, v in cfg.items():
+                if k not in vars_db["planes"][plan_name]:
+                    vars_db["planes"][plan_name][k] = v
+                    changed = True
 
-        vars_db = data["variables"]
+    # =========================
+    # MIGRACIÓN B: limpiar llaves legacy en planes
+    # =========================
+    for plan_name, cfg in vars_db.get("planes", {}).items():
+        if isinstance(cfg, dict):
+            for key in LEGACY_PLAN_KEYS:
+                if key in cfg:
+                    cfg.pop(key, None)
+                    changed = True
 
-        # --- Migración: si venía estructura vieja/plana, crear defaults/planes ---
-        if "defaults" not in vars_db or "planes" not in vars_db:
-            # Si ya había algo plano, lo intentamos meter a defaults (solo las llaves que aplican)
-            legacy = vars_db.copy()
+    data["variables"] = vars_db
 
-            vars_db = {
-                "planes": legacy.get("planes") if isinstance(legacy.get("planes"), dict) else DEFAULT_VARIABLES["planes"],
-                "defaults": legacy.get("defaults") if isinstance(legacy.get("defaults"), dict) else DEFAULT_VARIABLES["defaults"],
-            }
+    if changed:
+        save_db(data)
 
-            # Si el legacy traía llaves planas típicas, las mapeamos a defaults
-            for k in ("tasa_anual_default","enganche_default","rentas_deposito_default","comision_default","valor_default"):
-                if k in legacy and legacy[k] is not None:
-                    vars_db["defaults"][k] = legacy[k]
-
-            if "residuales_default" in legacy and legacy["residuales_default"] is not None:
-                vars_db["defaults"]["residuales_default"] = legacy["residuales_default"]
-
-            if "seguro_por_monto" in legacy and legacy["seguro_por_monto"] is not None:
-                vars_db["defaults"]["seguro_por_monto"] = legacy["seguro_por_monto"]
-
-            changed = True
-
-        # Asegurar que existan defaults/planes y llaves base
-        if not isinstance(vars_db.get("planes"), dict):
-            vars_db["planes"] = DEFAULT_VARIABLES["planes"]
-            changed = True
-        if not isinstance(vars_db.get("defaults"), dict):
-            vars_db["defaults"] = DEFAULT_VARIABLES["defaults"]
-            changed = True
-
-        # Completar faltantes en defaults
-        for k, v in DEFAULT_VARIABLES["defaults"].items():
-            if k not in vars_db["defaults"]:
-                vars_db["defaults"][k] = v
-                changed = True
-
-        # Completar faltantes en planes (sin pisar los existentes)
-        for plan_name, cfg in DEFAULT_VARIABLES["planes"].items():
-            if plan_name not in vars_db["planes"] or not isinstance(vars_db["planes"][plan_name], dict):
-                vars_db["planes"][plan_name] = cfg
-                changed = True
-            else:
-                for k, v in cfg.items():
-                    if k not in vars_db["planes"][plan_name]:
-                        vars_db["planes"][plan_name][k] = v
-                        changed = True
-
-        data["variables"] = vars_db
-        if changed:
-            f.seek(0)
-            f.truncate()
-            json.dump(data, f, indent=4)
-
-        VARIABLES = data["variables"]
+    VARIABLES = data["variables"]
 
 
 def ensure_template_available():
@@ -261,40 +274,34 @@ def ensure_template_available():
 
 
     # Registrar/actualizar plantilla en DB
-    with open(DB_PATH, "r+") as f:
-        data = json.load(f)
+    data = load_db()
 
-        # Si no hay plantillas, crear
-        if not data.get("plantillas"):
-            plantilla_id = str(uuid.uuid4())
-            data["plantillas"] = [{
-                "id": plantilla_id,
+    # Si no hay plantillas, crear
+    if not data.get("plantillas"):
+        plantilla_id = str(uuid.uuid4())
+        data["plantillas"] = [{
+            "id": plantilla_id,
+            "nombre": TEMPLATE_NAME,
+            "variables": detected_vars
+        }]
+        print("✅ Plantilla registrada en db.json (con variables detectadas)")
+    else:
+        # Si ya hay, actualiza por nombre
+        updated = False
+        for p in data["plantillas"]:
+            if p.get("nombre") == TEMPLATE_NAME:
+                p["variables"] = detected_vars
+                updated = True
+                break
+        if not updated:
+            data["plantillas"].append({
+                "id": str(uuid.uuid4()),
                 "nombre": TEMPLATE_NAME,
                 "variables": detected_vars
-            }]
-            print("✅ Plantilla registrada en db.json (con variables detectadas)")
-        else:
-            # Si ya hay, actualiza la primera (o busca por nombre)
-            updated = False
-            for p in data["plantillas"]:
-                if p.get("nombre") == TEMPLATE_NAME:
-                    p["variables"] = detected_vars
-                    updated = True
-                    break
-            if not updated:
-                data["plantillas"].append({
-                    "id": str(uuid.uuid4()),
-                    "nombre": TEMPLATE_NAME,
-                    "variables": detected_vars
-                })
-            print("✅ Variables de plantilla actualizadas en db.json")
+            })
+        print("✅ Variables de plantilla actualizadas en db.json")
 
-        f.seek(0)
-        f.truncate()
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-
-ensure_template_available()
+    save_db(data)
 
 
 # -------------------------------------------------
@@ -896,8 +903,7 @@ def cotizar(data: CotizacionRequest, request: Request):
         })
 
     # GENERAR DOCUMENTO
-    with open(DB_PATH, "r") as f:
-        data_db = json.load(f)
+    data_db = load_db()
 
     plantilla = data_db["plantillas"][0]
 
@@ -951,8 +957,7 @@ def cotizar(data: CotizacionRequest, request: Request):
 # GENERAR WORD + PDF
 # -------------------------------------------------
 def generar_documento_word_local(plantilla_id: str, valores: dict, request: Request):
-    with open(DB_PATH, "r") as f:
-        data = json.load(f)
+    data = load_db()
 
     plantilla = next(p for p in data["plantillas"] if p["id"] == plantilla_id)
     plantilla_path = os.path.join(TEMPLATES_DIR, plantilla["nombre"])
@@ -1003,6 +1008,7 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
     }
 
 
+
 # -------------------------------------------------
 # ENDPOINTS AUXILIARES
 # -------------------------------------------------
@@ -1035,16 +1041,20 @@ async def upload_template(file: UploadFile = File(...)):
 
     variables = extraer_variables(path)
 
-    with open(DB_PATH, "r+") as f:
-        data = json.load(f)
-        data["plantillas"].append({
-            "id": plantilla_id,
-            "nombre": file.filename,
-            "variables": variables
-        })
-        f.seek(0)
-        f.truncate()
-        json.dump(data, f, indent=4)
+    # 🔐 Lectura segura UTF-8
+    data = load_db()
+
+    if "plantillas" not in data:
+        data["plantillas"] = []
+
+    data["plantillas"].append({
+        "id": plantilla_id,
+        "nombre": file.filename,
+        "variables": variables
+    })
+
+    # 🔐 Escritura segura UTF-8
+    save_db(data)
 
     return {
         "id": plantilla_id,
@@ -1055,8 +1065,8 @@ async def upload_template(file: UploadFile = File(...)):
 
 @app.get("/templates")
 def list_templates():
-    with open(DB_PATH, "r") as f:
-        return json.load(f)["plantillas"]
+    data = load_db()
+    return data.get("plantillas", [])
 
 
 # -------------------------------------------------
@@ -1117,14 +1127,14 @@ def update_variables(payload: VariablesUpdate, x_api_key: str = Header(None)):
                 VARIABLES["planes"][pkey][k] = v
 
     # persistir db.json (variables completo)
-    with open(DB_PATH, "r+") as f:
-        data = json.load(f)
-        if "variables" not in data or not isinstance(data["variables"], dict):
-            data["variables"] = {}
-        data["variables"] = VARIABLES
-        f.seek(0)
-        f.truncate()
-        json.dump(data, f, indent=4)
+    data = load_db()
+
+    if "variables" not in data or not isinstance(data["variables"], dict):
+        data["variables"] = {}
+
+    data["variables"] = VARIABLES
+
+    save_db(data)
 
     refresh_cotizar_example()
     return {"status": "ok", "variables": VARIABLES}
