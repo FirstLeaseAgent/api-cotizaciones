@@ -67,39 +67,39 @@ DEFAULT_VARIABLES = {
     "planes": {
         "CLASICO": {
             "div_plan": 40,
-            "gestoria": 2320,
             "seguro_anual": -1,
             "seguro_contado": True,
-            "localizador_anual": 1976.64,
-            "localizador_inicial": 4491.52,
             "segurotag": "Seguro de Daños",
             "GPStag": "GPS",
             "plantag": "Gastos Administrativos",
-            "autobool": "NO",
+            "incluye_asistencia":False,
+            "incluye_gestoria": True,
+            "incluye_sustituto": False,
+            "incluye_GPS": True,
         },
         "PLUS": {
             "div_plan": 44,
-            "gestoria": 2320,
             "seguro_anual": -1,
             "seguro_contado": False,
-            "localizador_anual": 1976.64,
-            "localizador_inicial": 4491.52,
             "segurotag": "Seguro con Deducibles 5 y 10%",
             "GPStag": "GPS con Plataforma de Rastreo",
             "plantag": "Membresia Plan Plus",
-            "autobool": "NO",
+            "incluye_asistencia":False,
+            "incluye_gestoria": True,
+            "incluye_sustituto": False,
+            "incluye_GPS": True,
         },
         "PREMIUM": {
             "div_plan": 48,
-            "gestoria": 2320,
             "seguro_anual": -1,
             "seguro_contado": False,
-            "localizador_anual": 1976.64,
-            "localizador_inicial": 4491.52,
             "segurotag": "Seguro Premium Deducibles 3 y 5%",
             "GPStag": "GPS con Plataforma de Rastreo",
             "plantag": "Membresia Plan Premium",
-            "autobool": "SI",
+            "incluye_asistencia":True,
+            "incluye_gestoria": True,
+            "incluye_sustituto": True,
+            "incluye_GPS": True,
         },
     },
     "defaults": {
@@ -108,6 +108,11 @@ DEFAULT_VARIABLES = {
         "rentas_deposito_default": 0.0,
         "comision_default": 3.0,
         "valor_default": 0.0,
+
+        "gestoria_default": 2320,
+        "localizador_anual_default": 1976.64,
+        "localizador_inicial_default": 4491.52,
+
         "residuales_default": [
             {"plazo": 24, "residual": 40},
             {"plazo": 36, "residual": 30},
@@ -251,20 +256,42 @@ def ensure_template_available():
             f.write(resp.content)
         print("✅ Plantilla descargada.")
 
-    # Registrar plantilla en DB si no hay ninguna
+    # ✅ Detectar variables del DOCX
+    detected_vars = extraer_variables(template_path)
+
+
+    # Registrar/actualizar plantilla en DB
     with open(DB_PATH, "r+") as f:
         data = json.load(f)
-        if not data["plantillas"]:
+
+        # Si no hay plantillas, crear
+        if not data.get("plantillas"):
             plantilla_id = str(uuid.uuid4())
-            data["plantillas"].append({
+            data["plantillas"] = [{
                 "id": plantilla_id,
                 "nombre": TEMPLATE_NAME,
-                "variables": []
-            })
-            f.seek(0)
-            f.truncate()
-            json.dump(data, f, indent=4)
-            print("✅ Plantilla registrada en db.json")
+                "variables": detected_vars
+            }]
+            print("✅ Plantilla registrada en db.json (con variables detectadas)")
+        else:
+            # Si ya hay, actualiza la primera (o busca por nombre)
+            updated = False
+            for p in data["plantillas"]:
+                if p.get("nombre") == TEMPLATE_NAME:
+                    p["variables"] = detected_vars
+                    updated = True
+                    break
+            if not updated:
+                data["plantillas"].append({
+                    "id": str(uuid.uuid4()),
+                    "nombre": TEMPLATE_NAME,
+                    "variables": detected_vars
+                })
+            print("✅ Variables de plantilla actualizadas en db.json")
+
+        f.seek(0)
+        f.truncate()
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 
 ensure_template_available()
@@ -313,6 +340,10 @@ class CotizacionRequest(BaseModel):
 
     residuales: Optional[List[ResidualItem]] = None
 
+    incluye_gestoria: Optional[bool] = None
+    incluye_sustituto: Optional[bool] = None
+    incluye_GPS: Optional[bool] = None
+    incluye_asistencia: Optional[bool] = None
 # ------------------------------------------
 # ACTUALIZAR EJEMPLO DE SWAGGER DINÁMICAMENTE
 # ------------------------------------------
@@ -348,6 +379,11 @@ def refresh_cotizar_example():
         "residuales": D["residuales_default"],
         "gestoria": P.get("gestoria", 0),
         "div_plan": P.get("div_plan", 48),
+        "incluye_sustituto": True,
+        "incluye_gestoria": True,
+        "incluye_GPS": True,
+        "incluye_asistencia": P.get("incluye_asistencia", False),
+
     }
 
     CotizacionRequest.model_config["json_schema_extra"] = {"example": ejemplo}
@@ -368,15 +404,16 @@ class ResidualConfig(BaseModel):
 
 class PlanUpdate(BaseModel):
     div_plan: Optional[float] = None
-    gestoria: Optional[float] = None
     seguro_anual: Optional[float] = None
     seguro_contado: Optional[bool] = None
-    localizador_anual: Optional[float] = None
-    localizador_inicial: Optional[float] = None
     segurotag: Optional[str] = None
     GPStag: Optional[str] = None
     plantag: Optional[str] = None
-    autobool: Optional[str] = None
+    incluye_gestoria: Optional[bool] = None
+    incluye_sustituto: Optional[bool] = None
+    incluye_GPS: Optional[bool] = None
+    incluye_asistencia: Optional[bool] = None
+
 
 class DefaultsUpdate(BaseModel):
     tasa_anual_default: Optional[float] = None
@@ -386,6 +423,9 @@ class DefaultsUpdate(BaseModel):
     valor_default: Optional[float] = None
     residuales_default: Optional[List[ResidualConfig]] = None
     seguro_por_monto: Optional[List[SeguroRango]] = None
+    gestoria_default: Optional[float] = None
+    localizador_anual_default: Optional[float] = None
+    localizador_inicial_default: Optional[float] = None
 
 class VariablesUpdate(BaseModel):
     planes: Optional[Dict[str, PlanUpdate]] = None
@@ -657,11 +697,68 @@ def cotizar(data: CotizacionRequest, request: Request):
 
     accesorios = float(data.accesorios or 0.0)
 
-    # Plan-based (si request no manda)
-    loc_ini = data.localizador_inicial if data.localizador_inicial is not None else float(plan_cfg.get("localizador_inicial", 0) or 0)
-    loc_anual = data.localizador_anual if data.localizador_anual is not None else float(plan_cfg.get("localizador_anual", 0) or 0)
+    # includes: request manda; si no viene, plan manda
+    incl_gest = (
+        data.incluye_gestoria
+        if data.incluye_gestoria is not None
+        else bool(plan_cfg.get("incluye_gestoria", True))
+    )
 
-    gestoria_effective = data.gestoria if data.gestoria is not None else float(plan_cfg.get("gestoria", 0) or 0)
+    incl_gps = (
+        data.incluye_GPS
+        if data.incluye_GPS is not None
+        else bool(plan_cfg.get("incluye_GPS", True))
+    )
+
+    incl_sust = (
+        data.incluye_sustituto
+        if data.incluye_sustituto is not None
+        else bool(plan_cfg.get("incluye_sustituto", False))
+    )
+
+    incluye_asistencia_effective = (
+        data.incluye_asistencia
+        if data.incluye_asistencia is not None
+        else bool(plan_cfg.get("incluye_asistencia", False))
+    )
+    asistenciabool = "SI" if incluye_asistencia_effective else "NO"
+
+    # =========================
+    # GESTORÍA
+    # =========================
+    if not incl_gest:
+        gestoria_effective = 0.0
+    else:
+        if data.gestoria is not None:
+            gestoria_effective = float(data.gestoria)
+        else:
+            gestoria_effective = float(D.get("gestoria_default", 0) or 0)
+
+    # =========================
+    # GPS / LOCALIZADORES
+    # =========================
+    if not incl_gps:
+        loc_ini = 0.0
+        loc_anual = 0.0
+    else:
+        loc_ini = (
+            float(data.localizador_inicial)
+            if data.localizador_inicial is not None
+            else float(D.get("localizador_inicial_default", 0) or 0)
+        )
+
+        loc_anual = (
+            float(data.localizador_anual)
+            if data.localizador_anual is not None
+            else float(D.get("localizador_anual_default", 0) or 0)
+        )
+
+    # =========================
+    # ETIQUETAS
+    # =========================
+    autobool = "SI" if incl_sust else "NO"
+    gpsbool = "SI" if incl_gps else "NO"
+    gestbool = "SI" if incl_gest else "NO"
 
     # div_plan: request > plan
     div_plan_effective = data.div_plan if data.div_plan is not None else float(plan_cfg.get("div_plan", 48))
@@ -673,16 +770,17 @@ def cotizar(data: CotizacionRequest, request: Request):
 
     seguro_contado_flag = data.seguro_contado if data.seguro_contado is not None else bool(plan_cfg.get("seguro_contado", False))
 
-    # Flags (según tus reglas nuevas)
+    # ----------------------------
+    # Labels/flags para doc
+    # ----------------------------
     segbool = "SI" if (seguro_in != 0) else "NO"
-    gpsbool = "NO" if ((loc_ini or 0) == 0 and (loc_anual or 0) == 0) else "SI"
-    gestbool = "NO" if (gestoria_effective or 0) == 0 else "SI"
+    
 
     # Tags por plan
     plantag = plan_cfg.get("plantag", "")
     segurotag = plan_cfg.get("segurotag", "")
     GPStag = plan_cfg.get("GPStag", "")
-    autobool = plan_cfg.get("autobool", "")
+    
 
     nombre_upper = data.nombre.upper()
     activo_upper = data.nombre_activo.upper()
@@ -727,6 +825,7 @@ def cotizar(data: CotizacionRequest, request: Request):
         # Seguro
         "segurotag": segurotag,
         "segbool": segbool,
+        "asistenciabool": asistenciabool,
         "seguro_anual": formato_miles(
             float((seguro_anual * Decimal("1.16")).quantize(Decimal("0.01")))
         ),
@@ -840,7 +939,7 @@ def cotizar(data: CotizacionRequest, request: Request):
             "GPStag": GPStag,
             "plantag": plantag,
             "autobool": autobool,
-
+            "asistenciabool": asistenciabool,
             "segbool": segbool,
             "gestbool": gestbool,
             "gpsbool": gpsbool
