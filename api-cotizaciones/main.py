@@ -1965,9 +1965,19 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                         raise HTTPException(status_code=400, detail="Este scope requiere q para filtrar seguros/activos")
                     cur.execute(f"""
                         select
-                            a.identificador, a.no_contrato, a.cliente, a.tipo_de_activo, a.descripcion,
-                            a.numero_de_serie, a.numero_de_motor, a.aseguradora, a.poliza,
-                            a.inicio_vigencia_poliza, a.fin_vigencia_poliza
+                            a.identificador,
+                            a.no_contrato,
+                            a.cliente,
+                            a.tipo_de_activo,
+                            a.descripcion,
+                            a.numero_de_serie,
+                            a.numero_de_motor,
+                            a.aseguradora,
+                            a.poliza,
+                            a."BRÓKER" as broker,
+                            a."PRIMA_TOTAL_POLIZA" as prima_total_poliza,
+                            a.inicio_vigencia_poliza,
+                            a.fin_vigencia_poliza
                         from public.activos_historico a
                         where {where_activos}
                         order by a.fin_vigencia_poliza asc, a.no_contrato asc, a.identificador asc
@@ -1982,9 +1992,20 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
 
                     if len(nc) == 4 and nc.isdigit():
                         cur.execute("""
-                            select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
-                                   numero_de_serie, numero_de_motor, aseguradora, poliza,
-                                   inicio_vigencia_poliza, fin_vigencia_poliza
+                            select
+                                identificador,
+                                no_contrato,
+                                cliente,
+                                tipo_de_activo,
+                                descripcion,
+                                numero_de_serie,
+                                numero_de_motor,
+                                aseguradora,
+                                poliza,
+                                "BRÓKER" as broker,
+                                "PRIMA_TOTAL_POLIZA" as prima_total_poliza,
+                                inicio_vigencia_poliza,
+                                fin_vigencia_poliza
                             from public.activos_historico
                             where ltrim(split_part(no_contrato,'-',3),'0') = ltrim(%s,'0')
                             order by identificador
@@ -1992,9 +2013,20 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                         """, (nc, limit))
                     else:
                         cur.execute("""
-                            select identificador, no_contrato, cliente, tipo_de_activo, descripcion,
-                                   numero_de_serie, numero_de_motor, aseguradora, poliza,
-                                   inicio_vigencia_poliza, fin_vigencia_poliza
+                            select
+                                identificador,
+                                no_contrato,
+                                cliente,
+                                tipo_de_activo,
+                                descripcion,
+                                numero_de_serie,
+                                numero_de_motor,
+                                aseguradora,
+                                poliza,
+                                "BRÓKER" as broker,
+                                "PRIMA_TOTAL_POLIZA" as prima_total_poliza,
+                                inicio_vigencia_poliza,
+                                fin_vigencia_poliza
                             from public.activos_historico
                             where no_contrato = %s
                             order by identificador
