@@ -1425,7 +1425,7 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
             (_get_any(r, "ASEGURADORA") or None),
             (_get_any(r, "POLIZA", "PÓLIZA") or None),
             (_get_any(r, "BRÓKER", "BROKER") or None),
-            (_to_number(_get_any(r, "PRIMA_TOTAL_POLIZA", "PRIMA TOTAL POLIZA"))),
+            (_to_number(_get_any(r, "PRIMA_TOTAL_POL", "PRIMA_TOTAL_POLIZA", "PRIMA TOTAL POLIZA"))),
             (_to_date_str(_get_any(r, "INICIO VIGENCIA POLIZA", "INICIO VIGENCIA PÓLIZA"))),
             (_to_date_str(_get_any(r, "FIN VIGENCIA POLIZA", "FIN VIGENCIA PÓLIZA"))),
             Json(r),
