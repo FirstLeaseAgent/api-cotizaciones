@@ -1979,8 +1979,8 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                             a.numero_de_motor,
                             a.aseguradora,
                             a.poliza,
-                            a."BRÓKER" as broker,
-                            a."PRIMA_TOTAL_POLIZA" as prima_total_poliza,
+                            a.broker,
+                            a.prima_total_poliza,
                             a.inicio_vigencia_poliza,
                             a.fin_vigencia_poliza
                         from public.activos_historico a
@@ -2007,8 +2007,8 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                                 numero_de_motor,
                                 aseguradora,
                                 poliza,
-                                "BRÓKER" as broker,
-                                "PRIMA_TOTAL_POLIZA" as prima_total_poliza,
+                                broker,
+                                prima_total_poliza,
                                 inicio_vigencia_poliza,
                                 fin_vigencia_poliza
                             from public.activos_historico
@@ -2028,8 +2028,8 @@ def cartera_query(payload: CarteraQuery, x_api_key: Optional[str] = Header(None)
                                 numero_de_motor,
                                 aseguradora,
                                 poliza,
-                                "BRÓKER" as broker,
-                                "PRIMA_TOTAL_POLIZA" as prima_total_poliza,
+                                broker,
+                                prima_total_poliza,
                                 inicio_vigencia_poliza,
                                 fin_vigencia_poliza
                             from public.activos_historico
