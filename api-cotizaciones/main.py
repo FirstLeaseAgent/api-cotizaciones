@@ -1424,6 +1424,8 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
             (_to_date_str(_get_any(r, "FECHA DE VENCIMIENTO"))),
             (_get_any(r, "ASEGURADORA") or None),
             (_get_any(r, "POLIZA", "PÓLIZA") or None),
+            (_get_any(r, "BRÓKER", "BROKER") or None),
+            (_to_number(_get_any(r, "PRIMA_TOTAL_POLIZA", "PRIMA TOTAL POLIZA"))),
             (_to_date_str(_get_any(r, "INICIO VIGENCIA POLIZA", "INICIO VIGENCIA PÓLIZA"))),
             (_to_date_str(_get_any(r, "FIN VIGENCIA POLIZA", "FIN VIGENCIA PÓLIZA"))),
             Json(r),
@@ -1462,28 +1464,31 @@ def sync_historico(payload: SyncPayload, x_api_key: Optional[str] = Header(None)
                 if activos_values:
                     execute_values(cur, """
                         insert into public.activos_historico
-                          (identificador, no_contrato, contrato_interno, cliente, tipo_de_activo,
-                           descripcion, numero_de_serie, numero_de_motor,
-                           fecha_de_inicio, fecha_de_vencimiento,
-                           aseguradora, poliza, inicio_vigencia_poliza, fin_vigencia_poliza,
-                           raw)
+                        (identificador, no_contrato, contrato_interno, cliente, tipo_de_activo,
+                        descripcion, numero_de_serie, numero_de_motor,
+                        fecha_de_inicio, fecha_de_vencimiento,
+                        aseguradora, poliza, broker, prima_total_poliza,
+                        inicio_vigencia_poliza, fin_vigencia_poliza,
+                        raw)
                         values %s
                         on conflict (identificador) do update set
-                          no_contrato = excluded.no_contrato,
-                          contrato_interno = excluded.contrato_interno,
-                          cliente = excluded.cliente,
-                          tipo_de_activo = excluded.tipo_de_activo,
-                          descripcion = excluded.descripcion,
-                          numero_de_serie = excluded.numero_de_serie,
-                          numero_de_motor = excluded.numero_de_motor,
-                          fecha_de_inicio = excluded.fecha_de_inicio,
-                          fecha_de_vencimiento = excluded.fecha_de_vencimiento,
-                          aseguradora = excluded.aseguradora,
-                          poliza = excluded.poliza,
-                          inicio_vigencia_poliza = excluded.inicio_vigencia_poliza,
-                          fin_vigencia_poliza = excluded.fin_vigencia_poliza,
-                          raw = excluded.raw,
-                          updated_at = now();
+                        no_contrato = excluded.no_contrato,
+                        contrato_interno = excluded.contrato_interno,
+                        cliente = excluded.cliente,
+                        tipo_de_activo = excluded.tipo_de_activo,
+                        descripcion = excluded.descripcion,
+                        numero_de_serie = excluded.numero_de_serie,
+                        numero_de_motor = excluded.numero_de_motor,
+                        fecha_de_inicio = excluded.fecha_de_inicio,
+                        fecha_de_vencimiento = excluded.fecha_de_vencimiento,
+                        aseguradora = excluded.aseguradora,
+                        poliza = excluded.poliza,
+                        broker = excluded.broker,
+                        prima_total_poliza = excluded.prima_total_poliza,
+                        inicio_vigencia_poliza = excluded.inicio_vigencia_poliza,
+                        fin_vigencia_poliza = excluded.fin_vigencia_poliza,
+                        raw = excluded.raw,
+                        updated_at = now();
                     """, activos_values)
 
         return {
