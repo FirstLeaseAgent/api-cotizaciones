@@ -1049,7 +1049,9 @@ def generar_documento_word_local(plantilla_id: str, valores: dict, request: Requ
                                 run.text = run.text.replace(placeholder, str(val))
 
     folio = valores["folio"]
-    word_name = f"FirstLease-Cotizacion-{folio}.docx"
+    plan = valores.get("plan", "PLAN").upper()
+
+    word_name = f"FL-{plan}-COTIZACION-{folio}.docx"
     word_path = os.path.join(OUTPUT_DIR, word_name)
     doc.save(word_path)
 
