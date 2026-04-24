@@ -92,7 +92,7 @@
     "variables": {
         "planes": {
             "CLASICO": {
-                "div_plan": 40.0,
+                "div_plan": 35.0,
                 "seguro_anual": -1.0,
                 "seguro_contado": true,
                 "segurotag": "Seguro de Daños",
