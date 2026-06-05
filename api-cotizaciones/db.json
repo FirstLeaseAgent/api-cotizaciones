@@ -95,7 +95,7 @@
                 "div_plan": 35.0,
                 "seguro_anual": -1.0,
                 "seguro_contado": true,
-                "segurotag": "Seguro de Daños",
+                "segurotag": "Seguro Anual de Contado",
                 "GPStag": "GPS",
                 "plantag": "Gastos de Administración",
                 "incluye_gestoria": true,
