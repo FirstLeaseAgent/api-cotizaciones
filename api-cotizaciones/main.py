@@ -1,5 +1,6 @@
 import sys, os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from contextlib import asynccontextmanager
 
 
 import re
@@ -33,9 +34,15 @@ from datetime import datetime, timedelta
 # -------------------------------------------------
 getcontext().prec = 28
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    ensure_template_available()
+    yield
+
 app = FastAPI(
     title="API Unificada de Cotización y Documentos",
-    description="Servicio que calcula cotizaciones, administra plantillas y genera documentos Word/PDF."
+    description="Servicio que calcula cotizaciones, administra plantillas y genera documentos Word/PDF.",
+    lifespan=lifespan
 )
 
 TEMPLATES_DIR = "templates"
